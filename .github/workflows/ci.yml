@@ -1,0 +1,32 @@
+name: Quality gates
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run format:check
+      - run: bun test
+      - run: bun run test:acceptance
+      - run: bun run security:audit
+      - run: bun run build
+      - run: bun run test:e2e
+      - run: bun run package
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-validation
+          path: |
+            output/playwright/
+            output/v02-e2e/
+            output/v1-acceptance/
+            playwright-report/

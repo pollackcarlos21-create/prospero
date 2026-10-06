@@ -1,0 +1,14 @@
+{
+  "name": "@prospero/desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@prospero/core": "workspace:*",
+    "@prospero/providers": "workspace:*",
+    "@prospero/local-host": "workspace:*",
+    "@prospero/persistence": "workspace:*",
+    "@prospero/web": "workspace:*",
+    "@prospero/tools": "workspace:*"
+  }
+}

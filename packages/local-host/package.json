@@ -1,0 +1,12 @@
+{
+  "name": "@prospero/local-host",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@prospero/core": "workspace:*",
+    "@prospero/tools": "workspace:*",
+    "diff": "9.0.0"
+  }
+}
