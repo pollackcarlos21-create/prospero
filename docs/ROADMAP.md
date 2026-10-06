@@ -14,8 +14,12 @@ Foundation、Electron shell、provider、conversation、streaming、Agent loop�
 
 真实验证规范见 [V1-REAL-VALIDATION](V1-REAL-VALIDATION.md)。额度预留/保守 receipt、SQLite 跨进程 dispatch 账本、精确快照匹配、provider/Web 计量接缝、纯 report 一致性 validator 及默认拒绝 dry-run 已作为离线准备实现。连接探测、任务/摘要与受控研究通过实际服务入口验证。下一步为完整真实 runner、可信观察/语义审查与 ledger reconciliation、真实端口/native 路径和明确凭据/数据/预算授权。当前 0/30，不能将这些基础模块或打包回归计作真实完成率。
 
-## 延期
+## Dots 新阶段（M001 设计完成，后续尚未实现）
 
-先依据真实使用验证 context compaction、复杂写入体验、provider compatibility 和跨平台 process cleanup。以后才考虑 browser capability、background scheduled tasks、Gmail/Calendar/Drive/GitHub 连接、MCP 和更丰富 explicit memory。
+用户要求研究 persistent autonomous agents。源码边界、domain model、恢复/审批/后台约束与逐阶段验收见 [DOTS_ARCHITECTURE](DOTS_ARCHITECTURE.md)。建议从 M002 domain/lifecycle、M003 persistence、M004 bounded runner、M005 durable approval、M006 UI，推进至 M007 one-shot wake 与窗口外生命周期闭环；长期 plan/events/memory/proactive/showcases 随后扩展。M001 只交付文档并停止，当前产品不会因此开始后台执行。
+
+## 其他延期能力
+
+先依据真实使用验证 context compaction、复杂写入体验、provider compatibility 和跨平台 process cleanup。以后才考虑 browser capability、Gmail/Calendar/Drive/GitHub 连接、MCP 和更丰富 global explicit memory；Dots 的本地唤醒与任务 context 按上述新阶段单独验证。
 
 不提前创建 Tempest；只有 Ariel 与 Prospero 形成经实践验证的稳定公共 runtime 边界，再评估提取。自动 memory、cloud sync、账号与多 Agent 不进入 v0.1。

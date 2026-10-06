@@ -73,3 +73,7 @@ Electron main 管理 macOS window lifecycle。`hiddenInset` titlebar 保留系�
 Context menus 是 native Electron menus，使用 typed conversation/message/file targets。Main 提供 Rename/Delete confirmation actions，从保存的 message 读取 Copy 内容，并在 Reveal in Finder/Copy Path 前复核 workspace/attachment/known preview path。系统 clipboard 写入有大小限制且等待完成；renderer 没有 clipboard read API。持续至少 10 秒的任务完成时，窗口失焦才发送 silent、generic native notification，不含任务文本或路径。
 
 Visual tokens、soft surfaces、progressive disclosure 与 accessibility 约定见 [macOS-native UI](MACOS-NATIVE-UI.md)。
+
+## Dots 架构提案
+
+[Dots Architecture — M001](DOTS_ARCHITECTURE.md) 基于当前源码定义独立的 persistent agent orchestration、persistence 与 lifecycle 边界，并给出后续 milestone。它是设计提案，尚未实现；执行 runtime 继续使用现有 core，不提前提取 Tempest。
