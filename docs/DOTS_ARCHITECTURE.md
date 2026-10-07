@@ -1,8 +1,8 @@
-# Dots 架构提案 — M001
+# Dots 架构与 Domain — M001 / M002
 
-日期：2026-10-06（Asia/Shanghai）。状态：**源码发现与设计提案；Dots 尚未实现**。
+M001 日期：2026-10-06（Asia/Shanghai）。M002 更新：2026-10-07。状态：**M002 纯 domain/lifecycle 已实现；persistence、runner、scheduler、approvals 和 UI 尚未实现**。
 
-本阶段只完成 Repository / Architecture Discovery。以下包、类型、表、API 和 milestone 均为拟议设计，除非明确标为当前实现。M001 结束后停止，不自动实施 M002。
+M001 完成 Repository / Architecture Discovery，并停止于 commit `62d1f9c`。用户随后明确授权 M002 Dot Domain & Lifecycle。以下长期 persistence/runtime/UI 设计仍为提案；M002 只实现独立的纯 domain，不自动进入 M003。
 
 ## 1. 仓库与证据基线
 
@@ -40,6 +40,7 @@ apps/desktop React renderer
 | 当前 owner | 已有能力 | Dots 可复用与边界 |
 | --- | --- | --- |
 | `packages/core` | messages、固定 system policy、有限 model/tool loop、effects、权限语义、context budget、cancel/cleanup | 继续作为执行 runtime；不放 Dot identity、DB 或 timers |
+| `packages/dots` | M002 纯 identity/goal、Dot/Run lifecycle、in-flight/reference/revision guards | 零依赖；尚未接入任何产品 execution 或 storage |
 | `packages/providers` | OpenAI-compatible model adapter、bounded stream、连接测试、endpoint policy | 复用 `ModelPort`；不让 provider 管理 wake 或 Dot status |
 | `packages/tools` | host-neutral metadata、参数校验、资源上限 | 复用工具定义与解析；不能让模型提交任意宿主能力 |
 | `packages/local-host` | multi-root scopes、文件 discovery/read、结构化 Action Plan、stale 检查、shell cleanup | 复用 prepare/execute 和 journal；shell cwd 仍不是 OS sandbox |
@@ -54,7 +55,7 @@ apps/desktop React renderer
 - `Conversation` 是交互和展示记录，`ExecutionRecord` 是一次 conversation-bound 执行摘要。二者都不承担长期 agent identity。
 - 显式 Memory 是 `Settings.memory: MemoryEntry[]`；`ContextWindow` 的滚动摘要仅在本次 execution 内存在。它们均不是 Dot 的长期 checkpoint。
 - Computer 当前包括受 scope 约束的文件操作、逐命令批准且具有完整 OS 用户权限的 shell、Finder/clipboard/Trash 等 native adapters；没有通用浏览器 click/type 或 computer-use runtime。
-- 当前没有 Dot、scheduler、持久 wakeup、事件 trigger 或独立后台 worker。`DesktopService.timers` 是 32 ms UI stream batching。
+- M002 已有独立 Dot/Run domain，但当前产品路径仍未接入 Dot runner/store/UI；没有 scheduler、持久 wakeup、事件 trigger 或独立后台 worker。`DesktopService.timers` 是 32 ms UI stream batching。
 
 ### 当前执行与恢复约束
 
@@ -72,7 +73,7 @@ apps/desktop React renderer
 
 ### AD-DOTS-001：新增独立 orchestration owner，保留当前 runtime
 
-拟新增 `@prospero/dots`，负责 Dot domain、lifecycle reducer、application commands 和 ports。它不依赖 React、Electron、Node I/O、具体数据库、provider wire protocol 或 timer 实现。若 adapter 需要既有 runtime 类型，仅允许对 `@prospero/core` 的明确依赖；core 永不反向依赖 dots。
+M002 新增 `@prospero/dots`，目前仅负责纯 Dot/Run domain 与 lifecycle commands，零依赖。它不依赖 React、Electron、Node I/O、具体数据库、provider wire protocol 或 timer 实现。未来 application ports 按实际需要增加，runtime adapter 放在 main；core 永不反向依赖 dots。
 
 ```text
 renderer Dots UI → typed IPC → main DotManager composition
@@ -95,7 +96,20 @@ Trigger 是唤醒原因；Schedule 是其中一种配置；DotRun 是处理一�
 
 ### AD-DOTS-003：先确立合法状态，再接 persistence 与 execution
 
-原建议把 state machine 放在 M005 太晚。M002 就定义 `DotStatus` 常量/union、typed commands、transition guards 与 reducer，M003 落盘同一状态模型。M004 不允许先用散乱字符串驱动执行，再补状态约束。
+原建议把 state machine 放在 M005 太晚。M002 明确分离 `DotLifecycleStatus` 与 `DotRunStatus`，通过纯 domain commands 校验转换；M003 再落盘同一模型。waiting/schedule/approval 属于后续 orchestration 条件，不能混进长期 lifecycle。
+
+### AD-DOTS-008：M002 的最终 Domain Decisions
+
+M002 开始于 `codex/dots-architecture` / `62d1f9c`，工作区 clean；在 `codex/dots-domain-lifecycle` 实施。以下选择在写代码前确定：
+
+- Dot 长期 lifecycle 为 `active | paused | completed | cancelled | archived`；Run status 为 `pending | running | succeeded | failed | cancelled | interrupted`。单次 Run 的失败/中断/取消不改变 Dot 长期 lifecycle，也不自动重试。
+- Dot 仅包含 stable branded ID、name、一个 first-class readonly `DotGoal { text }`、lifecycle、创建/更新时间、revision 与可选 `inFlightRunId`。Goal 在本阶段固定；不增加独立 goal ID/revision、description 或尚无语义的配置字段。
+- DotRun 有自己的 branded ID、dotId、status、创建/更新时间及与状态对应的 start/finish 时间。`pending` 无 start/finish，`running` 有 start；成功/失败必须已 start，取消/中断可以发生在 start 前。`dotRevision` 与配套 Dot 快照对齐，拒绝同 ID、同毫秒下仍引用旧阶段的 Run 快照。
+- `createDotRun/startDotRun/finishDotRun` 同步返回新的 `{ dot, run }`，pending 和 running 都占用同一个 in-flight pointer。匹配 owner/current pointer 才能 start/finish；历史或外属 Run 不能释放新 Run 的位置。
+- 纯 `pauseDot/resumeDot/completeDot/cancelDot/archiveDot` 遇到 in-flight 都拒绝；domain 不假装 tool cleanup 已完成。未来 application 先封 admission、abort/await、settle Run，再提交最终 lifecycle。M002 不实现停止意图、控制器或实际 abort。
+- 宿主显式传入 ID 和 epoch-ms time，未来沿用项目的 `randomUUID` 发号；domain 不读时钟、不依赖 Node。ID/text/time 有界校验，允许同一毫秒的合法转换，拒绝时间倒退。每个有效 aggregate 变化递增 revision。
+- readonly 且 frozen 的新快照不修改输入。错误沿现有 typed Error 风格，用 `DotError.code` 区分 `invalid-input / invalid-transition / invalid-reference / run-in-flight`，固定文案不回显输入。
+- `@prospero/dots` 单一 public entry，零运行依赖。不调用 `core.runAgent`，不提前定义 Store/Runtime/Clock/wake ports、get/list repository API 或 fake repository。M003 才承担 persistence、全局 ID uniqueness 与 CAS；单个最新快照的占位约束不等于跨进程 concurrency guarantee。
 
 ### AD-DOTS-004：保存意图与结果，恢复事实，不自动重放效果
 
@@ -121,22 +135,22 @@ MVP 将 Chat window suspension 与 Dot app lifetime 分开。切换页面或关�
 
 Cmd+Q 仍真正退出，停止 admission/timers、取消并等待 tool/native cleanup、提交状态后关闭 DB。首版不安装 LaunchAgent/daemon，不承诺进程退出或机器睡眠期间准点执行；下次启动/系统恢复时处理 overdue wake。非 macOS 关闭最后窗口目前会退出，也按此边界处理。
 
-## 4. 初步 domain model
+## 4. Domain model 与后续实体
 
-以下确定语义与 ownership，具体字段/schema 在各 milestone 再细化，不一次建立十二套 repository。
+以下区分 M002 已实现的最小实体与后续提案；没有一次建立十二套 repository。
 
 | 实体 | 初步职责与关键字段 | 首次落地 |
 | --- | --- | --- |
-| `Dot` | stable `id`、name/description、单个 active goal reference、typed status、revision、timestamps、currentRunId/checkpointId、provider reference、policy revision；archive 使用 `archivedAt` | M002/M003 |
-| `DotGoal` | `id/dotId`、goal text、验收条件、goal revision、active/completed/cancelled；MVP 每个 Dot 一个 active goal | M002/M003 |
+| `Dot` | M002 已实现：stable `id`、name、goal、`lifecycle`、`revision`、createdAt/updatedAt、可选 inFlightRunId；不含未来配置与 checkpoint | M002 |
+| `DotGoal` | M002 已实现：first-class readonly `{ text }`，嵌入 Dot；整个 lifetime 固定，不等于当前 prompt，不单独复制 lifecycle | M002 |
 | `DotTask` | Dot plan 中可交付工作项，status/dependencies/current task/result refs；不等于 conversation 或 run | M008 |
-| `DotRun` | `id/dotId/goalRevision`、wakeId、attempt、started/finished、runtime outcome、预算使用、checkpoint/result refs；单独 run status | M002/M003/M004 |
+| `DotRun` | M002 已实现：`id/dotId/dotRevision/status`、createdAt/updatedAt、状态对应的 startedAt/finishedAt；没有 runtime、wake 或 artifact payload | M002 |
 | `DotEvent` | host-issued id、dotId/runId、递增 sequence、time、typed kind、observable payload；append-only | M003 |
-| `DotCheckpoint` | immutable version、goal revision、已完成/待做事实、notes、当前工作项、artifact/source refs、continuation reason；不是进程快照 | M003/M004 |
-| `DotTrigger` | typed wake cause：manual/time，之后 event/dependency/user-message；携带幂等 ID | M002/M007，M009 扩展 |
+| `DotCheckpoint` | immutable version、目标绑定、已完成/待做事实、notes、当前工作项、artifact/source refs、continuation reason；不是进程快照 | M004 |
+| `DotTrigger` | 拟议 typed wake cause：manual/time，之后 event/dependency/user-message；携带幂等 ID | M007，M009 扩展 |
 | `DotSchedule` | MVP 为一次绝对 UTC wake；未来 recurrence 独立扩展；展示使用用户 timezone | M007 |
 | `DotApproval` | request/snapshot/digest、dot/run/goal/policy revision、effect/resource、pending/approved/denied/expired/consumed、expiry、用户决策 event | M005 |
-| `DotPermission` | main-owned scope references、allowed capability 与明确授权边界、policy revision、denial gates；不保存 API key，也不把 plan 等同 capability | M002 契约、M005 enforcement |
+| `DotPermission` | 拟议 main-owned scope references、allowed capability 与明确授权边界、policy revision、denial gates；不保存 API key，也不把 plan 等同 capability | M005 |
 | `DotMemory / DotContext` | 带来源的 structured notes/facts/task summaries；从有限 checkpoint 起步，不保存全部网页或自动 global Memory | M004 最小 checkpoint；M010 完整管理 |
 | `DotArtifact` | result kind/title、run/task refs、host-verified content/hash 或 authorized file ref、createdAt、验证状态 | M004 最小内部结果；M008 扩展 |
 
@@ -144,13 +158,13 @@ Cmd+Q 仍真正退出，停止 admission/timers、取消并等待 tool/native cl
 
 ### 最小 application API
 
-M002 定义 `createDot/getDot/listDots/updateDot/pauseDot/resumeDot/archiveDot`。M004 才接 `runDot/stopDot`，M007 接 `wakeAt`。creation 由宿主生成稳定 ID/time，保存成功后才返回。
+M002 public commands：`createDot/pauseDot/resumeDot/completeDot/cancelDot/archiveDot`，以及 `createDotRun/startDotRun/finishDotRun`。只导出必要的 entity/ID/status/change types、status constants 和 `DotError`；validation/snapshot helpers 不在 public entry 导出。
 
-MVP archive 保留 history、取消待执行 wake；active run 归档时先持久封 admission、abort 并等待 cleanup，再完成 archive，不新增 destructive hard-delete。name/description 可在非运行状态更新；goal、provider、scope、policy 变更必须拒绝 active run 修改或先完成 stop，并增加 revision、使旧 checkpoint/approval/wake 的绑定失效。`resumeDot` 从 PAUSED 回到 READY/相应等待条件，不自动获得 permission。
+`getDot/listDots` 与 store-based update 留给 M003 以后的 application；M002 不提供 repository、goal 编辑、run history list 或 hard-delete。未来宿主创建 ID/time 并在持久化成功后返回 DTO，新增 consumer 在自己的 package.json 声明 `@prospero/dots: workspace:*`，不为未接线能力增加 desktop dependency。
 
-`pauseDot` 先持久写 pause intent、阻止后续 admission，再 abort 并等待清理；最后提交 PAUSED。需要 `stopDot` 时，定义为本次 run 的取消并使 Dot PAUSED，保留恢复位置；取消整个 goal 使用单独 `cancelDot`，进入 CANCELLED。UI 必须说明“停止本次工作”和“取消长期目标”的区别。
+M002 `pauseDot` 只接受无 in-flight 的 active Dot。它不 abort、不停止 OS 进程；future application stop/pause 必须先阻止 admission、等待实际 cleanup、结束 Run，再调用该纯转换。`finishDotRun(..., 'cancelled', ...)` 仅取消本次 Run，`cancelDot` 才取消长期目标。archive 保留 domain identity，future store 保留 history。
 
-### ports 与最小存储语义
+### 后续 ports 与最小存储语义（M002 不实现）
 
 | Port | 必需语义 |
 | --- | --- |
@@ -165,42 +179,46 @@ Store 不能只暴露松散 `saveDot()`、`saveRun()` 然后靠调用者猜测�
 
 ### Dot 与 Run 分别建模
 
-拟议 DotStatus：`CREATED, READY, RUNNING, WAITING, SLEEPING, NEEDS_APPROVAL, PAUSED, COMPLETED, FAILED, CANCELLED`。M002 最小 transition reducer 覆盖这些状态，后续逐步接相应 driver；archive 是独立标记，不混入执行状态。
+M002 采用两个独立维度，取代 M001 将 execution/wait/lifecycle 混合的 `DotStatus` 提案。Dot 一经创建即 `active`；其 identity 和 goal 不随 Run 更新。
 
-DotRun 使用 `RUNNING, SUCCEEDED, SUSPENDED, FAILED, CANCELLED, INTERRUPTED`。成功结束一次 run 后，Dot 仍可能 SLEEPING；runtime completed 与 Dot COMPLETED 不一一映射。
+| Dot command | 合法来源 → 目标 | guard |
+| --- | --- | --- |
+| pauseDot | active → paused | 无 pending/running Run |
+| resumeDot | paused → active | 无 in-flight Run |
+| completeDot | active/paused → completed | 显式长期完成命令；无 in-flight Run |
+| cancelDot | active/paused → cancelled | 显式长期取消命令；无 in-flight Run |
+| archiveDot | active/paused/completed/cancelled → archived | 无 in-flight Run；本阶段永久归档，不提供 unarchive |
 
-| 当前状态 / event | 下个状态 / 条件 |
-| --- | --- |
-| CREATED / initialize | READY；goal、provider reference 与默认 policy 合法 |
-| READY / claim manual-or-due-wake | RUNNING；未归档、无 pause/cancel/recovery 阻断、全局 admission 成功且 claim 原子提交；effect-specific denial 保留并限制 host，允许无被拒效果的安全重规划 |
-| RUNNING / validated continuation | READY；只创建有界 pending continuation，由 manager 另行 admission；不递归无限 invoke |
-| RUNNING / wait for user or external condition | WAITING；保存 typed reason 与 wake condition，释放 runtime/admission |
-| RUNNING / sleep until | SLEEPING；UTC future timestamp 与 bounds 校验，checkpoint 和 wake 同事务提交 |
-| RUNNING / approval suspension | NEEDS_APPROVAL；pending intent 与 immutable preview 已保存，没有发生未批准效果 |
-| NEEDS_APPROVAL / approved | READY；仅保存 approved 与 pending resume intent；经 admission 重新 prepare/revalidate，成功后才原子 consume 与提交 dispatch intent |
-| NEEDS_APPROVAL / denied-or-expired | WAITING；记录 denial/expiry；无相同效果自动 retry，安全重规划或用户输入再继续 |
-| SLEEPING / due wake | READY；只标记 eligible，wake 仍 pending；获得 admission 后才和新 Run/RUNNING 同事务 claim，暂停/归档/revision guard 仍有效 |
-| WAITING / matching manual-input-or-condition | READY；先保存输入/事实，条件满足且 gate 已解除；通用事件 driver 到 M009 才接 |
-| 非终态 / pause | PAUSED；先封 admission，再等待 active tool/native cleanup；不把未完成效果报告成成功 |
-| PAUSED / resume | READY 或恢复原 WAITING/SLEEPING；明确重建条件，已过期 wake 合并为一次待唤醒 |
-| RUNNING / verified goal result | COMPLETED；结果存在且 host 校验条件成立；长期 monitoring goal 默认不会一轮 complete |
-| RUNNING / failed | FAILED；保存实际原因/partial facts；timer 不默认重试，用户明确 retry 才回 READY |
-| 非终态 / cancel goal | CANCELLED；停止/cleanup、取消 pending wake，保留 history |
-| RUNNING / crash recovery | 原 Run INTERRUPTED；优先兑现已保存 pause/cancel/archive intent，否则 Dot WAITING；先核对效果，禁止从旧 running 指针自动 replay |
+重复转换与其他组合全部拒绝；completed/cancelled/archived Dot 不再创建 Run，也不能 resume。completed/cancelled 仍可归档。completed 是否满足真实 goal 由未来 application 的结果校验负责，本阶段只证明显式状态转换。
 
-COMPLETED/CANCELLED 不接受旧 timer 或迟到 runtime result；新目标应新建 Dot/goal，明确保留身份历史。FAILED 的 retry、WAITING 的恢复和 approval consumption 也必须走 reducer guards，不直接写 status。
+| Run command | 合法来源 → 目标 | aggregate 变化 |
+| --- | --- | --- |
+| createDotRun | 新 Run → pending | Dot 必须 active 且空位；保留 Dot identity/goal，预留 inFlightRunId |
+| startDotRun | pending → running | 验证 owner/pointer/dotRevision/time，记录 startedAt，递增对应 Dot revision |
+| finishDotRun | running → succeeded/failed/cancelled/interrupted | 记录 finishedAt，释放 pointer；Dot lifecycle 保持 active |
+| finishDotRun | pending → cancelled/interrupted | 尚未开始的取消或中断，无伪造 startedAt；释放 pointer |
+
+Run 终态不接受 restart 或再次结束；Run 成功不等于 Dot completed，Run 失败/中断不等于 Dot failed。`dotRevision` 在两个返回快照中匹配，旧阶段、外属 Run 或旧 Run 不得结束新的 in-flight。revision 是纯快照版本，不是数据库锁；M003 仍须 CAS/唯一约束阻止陈旧 aggregate 分叉。
+
+### Wake / Block reason 属于后续 orchestration
+
+active Dot 可以暂时因为 schedule、approval、user input 或 recovery 而没有 Run；这些将以独立、有界、typed 条件建模，本阶段不预先增加字段/enum。未来 UI 的 SLEEPING/NEEDS_APPROVAL 等是可观察投影，不是 M002 的永久 lifecycle。
+
+future claim 必须满足 lifecycle active、无 in-flight、wake eligible、无控制/recovery 阻断；effect-specific denial 继续限制 host，但允许无被拒效果的安全重规划。due 只标 eligible，成功 admission 后才原子 claim/create/start；WAIT/睡眠/审批挂起结束本次 invocation，释放 slot，并保存独立条件。具体 Run suspension primitive 及必要类型扩展留在 M005，不能用 cancelled/denied 假装 suspended。
+
+崩溃恢复记录原 Run interrupted，并优先兑现停止/取消/归档意图；未知效果保留 recovery block，不能因 Dot 仍 active 就自动重放。预算/无进展失败也需要 application gate；domain 允许新的显式 Run，不自动执行 retry。
 
 ### 一次有限 run 的事务顺序
 
 1. 验证 Dot/goal/policy revision、scope identity、provider availability、denial/recovery gates，获得共享 admission。
-2. 原子 claim wake，创建 DotRun、写 run-start event，将 Dot 置 RUNNING；提交失败时不读取凭据、不请求模型。
+2. 原子 claim wake，创建/启动 DotRun 并保存对应 Dot pointer/revision、run-start event；Dot lifecycle 仍 active，提交失败时不读取凭据、不请求模型。
 3. main 在既有 credential reservation 中初始化 adapters；context 来自有限 checkpoint、明确 goal、task/notes 和必要来源 metadata。
 4. 调用当前 core runtime；继续用同一预算、AbortSignal、host prepare/execute、permission 与 effect journal。
 5. runtime 结束后，由 main 校验 `DotStepProposal`：`CONTINUE / WAIT / SLEEP / REQUEST_APPROVAL / REQUEST_USER_INPUT / COMPLETE / FAIL`。模型只能提出下一步，不能更改授权、直接设置状态或发 timers。
 6. 原子写 run outcome、checkpoint、artifact refs、events、Dot status 和 wake；提交成功才发布 UI 并安排下一次 timer。
 7. 释放 admission；CONTINUE 通过新 wake/queue 且受连续次数、累计预算与最小间隔限制。停止、无进展或预算耗尽进入可观察等待，不反复“新 run 重置额度”。
 
-M004 推荐通过 adapter 注册一个严格校验的 application control tool `checkpoint_dot`，记录有限 continuation proposal；它不调用 DB/timer/外部能力。第一次合法 proposal 之后阻止后续 effect tools，待 core 正常结束再提交。重复/缺失/非法 proposal、goal revision 不匹配或 invocation failed 时不标 goal 完成，进入 FAILED/WAITING 并保留事实；不要用关键词匹配 assistant prose。schema、终止门控和预算须通过 fake model 验证，不依赖 provider structured-output 新协议。
+M004 推荐通过 adapter 注册一个严格校验的 application control tool `checkpoint_dot`，记录有限 continuation proposal；它不调用 DB/timer/外部能力。第一次合法 proposal 之后阻止后续 effect tools，待 core 正常结束再提交。重复/缺失/非法 proposal、目标绑定不匹配或 invocation failed 时不标 goal 完成，记录 Run outcome 与独立失败/等待条件；不要用关键词匹配 assistant prose。schema、终止门控和预算须通过 fake model 验证，不依赖 provider structured-output 新协议。
 
 M004 首先只开放无外部效果的内部结果和明确 scope 的读取能力；联网、write/shell 与跨重启 approval continuation 在 M005 的 owner/授权接线完成后才开放。Researcher 的 fake 研究材料仅证明 context continuation，不冒充真实联网研究。
 
@@ -208,14 +226,14 @@ M004 首先只开放无外部效果的内部结果和明确 scope 的读取能�
 
 M003 在现有 `ProsperoStore` 数据库增加一个明确的 Dot adapter。计划使用 schema v3；实施时重新核对当前 `user_version`，不能假定版本一直为 2。保持 conversation/history/settings/providers/credentials 的旧查询行为，迁移不从 Conversation 自动生成 Dot。
 
-最小 durable records：`dots`、`dot_goals`、`dot_runs`、`dot_events`、`dot_checkpoints`、`dot_wakeups`；M005 再增加 approval/gate 与 Dot-owned effect journal/source 存储。M003 不提前建立完整 tasks/vector/integration schema。
+M003 先保存已实现 Dot（含单个 DotGoal）与 DotRun 快照及原子双实体转换；不机械建立独立 goal/checkpoint/wakeup 表。events/recovery 按实际原子审计需要确定；M004/M007 再增加 checkpoint/wake，M005 增加 approval/gate 与 Dot-owned effect journal/source 存储。不能提前建立完整 tasks/vector/integration schema。
 
-- Dot 有独立 primary key、revision 与 archive marker；同一 Dot 至多一个 active run，醒来由稳定 wake ID 去重。
+- Dot 有独立 primary key、revision 与 lifecycle；pending/running Run 都占位，Run ID 唯一与快照 CAS 在 store enforce；未来 wake 用稳定 ID 去重。
 - checkpoint immutable 且有 schema version、goal revision、来源 run；event sequence 唯一并 append-only。最小查询投影可随 migration 版本演进。
 - 所有 transition 用事务/CAS guards；不能用 SQLite 最后写入覆盖方式吞掉 pause 与 finish race。
 - 应用崩溃在 claim 后：该 run interrupted，已提交的 pause/cancel/archive intent 优先兑现；在效果 intent 后、receipt 前：标 outcome unknown/needs inspection；在最终 checkpoint 提交后：checkpoint 与 wake 一起可见，不再次交付同一内部 artifact。
 - 旧 finish 的 CAS 冲突不能覆盖更新后的 Dot，但该 Run 的实际 partial/cleanup receipts 与 terminal audit 仍须按原 run identity 保存；恢复和 UI 不能因为 aggregate 冲突而丢失已发生事实。
-- 重启处理 overdue wake 前完成 recovery scan。RUNNING/未确认外部效果不直接 runnable；SLEEPING 已确认 checkpoint 可以对单个 due wake catch up。
+- 未来重启处理 overdue wake 前完成 recovery scan。pending/running Run 或未确认效果不直接 replay；已干净结束的 Run/checkpoint 可在唤醒条件满足后开始一个新 Run。
 - DB commit 失败、磁盘满或非法 schema 时停止 admission，保留可核对证据；恢复数据库后先 reconcile，不自动重发效果。
 
 当前 `executions/action_plans/web_sources` 有 `conversation_id` 外键，`ResearchPlan` 也显式有 `conversationId`。M005 采用独立 Dot-owned 存储 adapter，并在实际 host/research 接缝引入 typed `ExecutionOwner = ConversationOwner | DotOwner`；旧 conversation owner 保持兼容。可复用 journal 验证逻辑，但不能把 dotId 写到 conversationId 字段或移除现有 FK 强行通过。
@@ -236,7 +254,7 @@ API key 不进入 Dot/DTO/checkpoint；仅保存 provider reference，main 每�
 
 M005 需要先补最小、明确、opt-in 的 **runtime suspension/continuation primitive**，仍由 core 拥有执行语义，Dots 拥有 durable approval/lifecycle。保持现有 Chat 默认等待/超时/配对/cleanup 行为。具体 public contract 应先写 focused ADR，并覆盖所有现有 consumers；不能仅扩大 AgentOutcome union 而漏掉 tool history 和 onSkipped 行为。
 
-待恢复数据是有限、可序列化的 pending intent：call/必要参数、run/goal/policy binding、host-issued immutable preview/digest、scope/file preconditions、expiry 和配对历史。审批请求保存成功后才能进入 NEEDS_APPROVAL 并释放 runtime；不保存执行闭包或活动网络 reservation。
+待恢复数据是有限、可序列化的 pending intent：call/必要参数、run/goal/policy binding、host-issued immutable preview/digest、scope/file preconditions、expiry 和配对历史。审批请求保存成功后才能设置 approval block、结束本次 invocation 并释放 runtime；不保存执行闭包或活动网络 reservation。
 
 用户 click approve 只原子保存 `pending → approved` 与 resume intent，不提前消费。获得 admission、通过 core/host 重新 prepare/revalidate 后，才原子绑定 approval consumption、本次 resume claim 与 dispatch intent；此后进程崩溃按已消费但效果可能未知处理，不自动重发。审批与 admission 之间重启必须仍能核对 approved pending intent，不能留下没有恢复位置的 consumed 记录。
 
@@ -254,7 +272,7 @@ main scheduler 读取最早 pending dueAt、设置有上限的 timer；timer 触
 
 同一 one-shot wake 最多成功 claim 一次；due-check 可以重复，无法承诺所有外部效果 exactly-once。执行 slot 忙时持久保留 pending，释放后 drain；多个 missed recurrence 尚不实现，one-shot overdue 只 catch up 一次。Pause/archive/cancel 取消或隔离 wake，旧 timer 即使到达也不能启动。
 
-scheduler 有界检查不同于无限 LLM loop。没有 active runtime 的 WAITING/SLEEPING/NEEDS_APPROVAL 不占执行 slot，不依赖挂着 model connection。重复通知也按 event/approval ID 去重。
+scheduler 有界检查不同于无限 LLM loop。没有 active runtime 的等待/睡眠/审批条件不占执行 slot，不依赖挂着 model connection。重复通知也按 event/approval ID 去重。
 
 ### MVP 的时间与后台承诺
 
@@ -286,8 +304,8 @@ UI 在可测试 runner/approval 之后、定时自主工作之前接入。保留
 | Milestone | 范围与预计 owner | 完成标准 |
 | --- | --- | --- |
 | **M001 Repository / Architecture Discovery** | 本提案、当前 architecture/roadmap 导航 | 真实源码边界、Tempest 冲突、domain/风险/验收路线明确；只有 docs；完成后停止 |
-| **M002 Dot Domain & Lifecycle** | `packages/dots`：Dot/Goal/Run、typed status/commands、reducer、Store/Runtime/Clock/wake contracts；memory fake adapter 只用于测试 | create/get/list/update/pause/resume/archive；所有合法/非法转换、goal revision、终态保护与过时 callback guards 测试；无 UI/Node/DB 依赖 |
-| **M003 Dot Persistence & Recovery** | `packages/persistence` Dot adapter、迁移与最小独立表 | 创建/修改/归档后新进程仍存在；claim/finish/checkpoint+wake 原子；旧 profile 兼容；migration repeat/future-version/failure/CAS/crash tests；不接真实 runtime |
+| **M002 Dot Domain & Lifecycle** | 已实现 `packages/dots`：Dot/Goal/Run、独立 lifecycle/status、纯转换、owner/revision/in-flight guards | creation/全部合法非法转换/stable identity/终态/失败不终止 Dot；无 UI/Node/DB/runtime/ports 依赖 |
+| **M003 Dot Persistence & Recovery** | `packages/persistence` Dot adapter、迁移与最小独立记录；get/list/application API | 新进程保存同一身份/goal/Run/归档状态；双快照原子保存、CAS 与 Run ID unique；旧 profile 兼容；migration/failure/crash tests；不接真实 runtime |
 | **M004 Bounded Dot Runner** | main DotManager/当前 core adapter、共享 admission、有限 checkpoint/result、pause/stop/recovery gates；不提前开启 network/write/shell | fake model 两次 invocation 明确读取上次 checkpoint；每次有限，completed 不误判 goal complete；pause/Stop 后无后续效果；Chat/Dot 不并发；checkpoint failure 阻止继续；前缀不 replay |
 | **M005 Durable Approval & Effect Ownership** | core opt-in suspension primitive + focused ADR；main/host 的 Dot owner、审批/gates、stable pending intent rehydration；persistence Dot journal/source；沿用现有安全 Web/Action Plan | 批准等待与 approve 后未 resume 均可跨 restart；重建必须同 intent/digest/preconditions；resume claim/consume/dispatch 原子；stale/deny/expiry 无效果；跨 run deny 不绕过；default Chat 全部 regression；没有窗口也能安全等待 |
 | **M006 My Dots & Detail** | typed IPC/preload + renderer list/detail/control/timeline/approval；最小内部 artifact 展示 | 用户可创建、运行、停止/暂停、恢复、归档；restart 身份/历史/审批仍可检查；无 renderer privilege；对应 Electron E2E |
@@ -318,7 +336,7 @@ M007 是第一个完整 MVP 门槛，M002–M006 只分别交付基础能力，�
 6. 独立测试 Pause/Stop/Archive 与触发同时发生、Chat 占执行 slot、重复 timer、过时完成 callback、DB 写失败、初始化取消和 tool cleanup；只有实际 receipts 支持完成结果。
 7. UI list/detail/timeline 全部由 durable 状态恢复。执行预算耗尽或来源不足明确展示 incomplete，不能为了 demo 强行标 COMPLETE。
 
-离线 demo 证明 orchestration/persistence/lifecycle/IPC 正常。要声称“第二天真实继续研究”还需正常产品入口的真实 model/search/page-source/artifact 证据；本 M001 未调用模型/搜索/API、未读取用户数据库、未执行 Dots demo。当前已有 unit/acceptance/E2E 也不能替代尚不存在的 Dot tests。
+上述未来离线 demo 用于证明 orchestration/persistence/lifecycle/IPC 正常。要声称“第二天真实继续研究”还需正常产品入口的真实 model/search/page-source/artifact 证据；M001/M002 未调用模型/搜索/API、未读取用户数据库、未执行 Dots demo。M002 已有纯 domain tests，但不能替代尚未实现的 Dot persistence/runner/scheduler 集成测试。
 
 ## 11. 关键风险与验收门槛
 
@@ -337,9 +355,9 @@ M007 是第一个完整 MVP 门槛，M002–M006 只分别交付基础能力，�
 
 本阶段不涉及 distributed/multi-node/cloud、swarm、marketplace、billing、enterprise RBAC、复杂 vector DB、mobile push、任意 connectors 或自动安装后台服务。
 
-## 12. 源码索引与 M001 验证边界
+## 12. 源码索引与验证边界
 
-以下行号对应开始 HEAD；本阶段仅新增文档与导航，不修改运行代码。
+以下既有代码行号对应 M001 开始 HEAD。M002 仅新增独立 `packages/dots` 及 workspace lock 注册，没有修改现有 core/main/host/UI 或 persistence 实现。
 
 | 证据 | 位置 |
 | --- | --- |
@@ -366,4 +384,4 @@ M007 是第一个完整 MVP 门槛，M002–M006 只分别交付基础能力，�
 
 已静态检查上述 contracts、composition、storage、UI、重要 ADR/README/architecture/roadmap，以及已有 unit/acceptance/Electron E2E 的组织方式。M001 的 quality gate 实际命令/结果在当次 Milestone Result 中报告；不把文档提案当运行验证，不新增镜像实现的测试。
 
-下一阶段仅建议 M002 Dot Domain & Lifecycle；实施前重新核对分支、HEAD 和工作区。本次交付到此停止。
+M002 domain tests 与完整 regression 的实际命令/结果见当次 Milestone Result；包源码入口为 `packages/dots/src/index.ts`。下一阶段仅建议 M003 Dot Persistence & Recovery；实施前重新核对分支、HEAD 和工作区。本次停止于 M002。

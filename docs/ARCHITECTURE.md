@@ -76,4 +76,4 @@ Visual tokens、soft surfaces、progressive disclosure 与 accessibility 约定�
 
 ## Dots 架构提案
 
-[Dots Architecture — M001](DOTS_ARCHITECTURE.md) 基于当前源码定义独立的 persistent agent orchestration、persistence 与 lifecycle 边界，并给出后续 milestone。它是设计提案，尚未实现；执行 runtime 继续使用现有 core，不提前提取 Tempest。
+[Dots Architecture / Domain](DOTS_ARCHITECTURE.md) 记录 M001 提案与 M002 的纯 domain 实现。`@prospero/dots` 零依赖，分离 Dot 长期 lifecycle 和单次 DotRun status，尚未接 persistence、runner、scheduler、approval 或 UI。后续执行仍复用现有 core，不提前提取 Tempest。

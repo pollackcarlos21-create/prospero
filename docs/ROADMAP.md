@@ -14,9 +14,11 @@ Foundation、Electron shell、provider、conversation、streaming、Agent loop�
 
 真实验证规范见 [V1-REAL-VALIDATION](V1-REAL-VALIDATION.md)。额度预留/保守 receipt、SQLite 跨进程 dispatch 账本、精确快照匹配、provider/Web 计量接缝、纯 report 一致性 validator 及默认拒绝 dry-run 已作为离线准备实现。连接探测、任务/摘要与受控研究通过实际服务入口验证。下一步为完整真实 runner、可信观察/语义审查与 ledger reconciliation、真实端口/native 路径和明确凭据/数据/预算授权。当前 0/30，不能将这些基础模块或打包回归计作真实完成率。
 
-## Dots 新阶段（M001 设计完成，后续尚未实现）
+## Dots 新阶段（M001 / M002 完成）
 
-用户要求研究 persistent autonomous agents。源码边界、domain model、恢复/审批/后台约束与逐阶段验收见 [DOTS_ARCHITECTURE](DOTS_ARCHITECTURE.md)。建议从 M002 domain/lifecycle、M003 persistence、M004 bounded runner、M005 durable approval、M006 UI，推进至 M007 one-shot wake 与窗口外生命周期闭环；长期 plan/events/memory/proactive/showcases 随后扩展。M001 只交付文档并停止，当前产品不会因此开始后台执行。
+用户要求研究 persistent autonomous agents。源码边界、domain decisions、恢复/审批/后台约束与验收见 [DOTS_ARCHITECTURE](DOTS_ARCHITECTURE.md)。M002 已新增零依赖 `@prospero/dots`：stable identity/goal、独立 Dot/Run lifecycle、合法转换、单 in-flight 快照约束与纯 domain tests。尚未接入产品执行或后台工作。
+
+下一阶段仅为 M003 persistence；后续 M004 bounded runner、M005 durable approval、M006 UI，再至 M007 one-shot wake 与窗口外生命周期闭环。长期 plan/events/memory/proactive/showcases 随后扩展；本次停止于 M002，不自动实施 M003。
 
 ## 其他延期能力
 

@@ -43,6 +43,10 @@
       "name": "@prospero/core",
       "version": "0.2.0",
     },
+    "packages/dots": {
+      "name": "@prospero/dots",
+      "version": "0.2.0",
+    },
     "packages/local-host": {
       "name": "@prospero/local-host",
       "version": "0.2.0",
@@ -187,6 +191,8 @@
     "@prospero/core": ["@prospero/core@workspace:packages/core"],
 
     "@prospero/desktop": ["@prospero/desktop@workspace:apps/desktop"],
+
+    "@prospero/dots": ["@prospero/dots@workspace:packages/dots"],
 
     "@prospero/local-host": ["@prospero/local-host@workspace:packages/local-host"],
 
