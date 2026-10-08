@@ -48,7 +48,7 @@ test('schema version is migrated once and future versions preserve the original 
   try {
     new ProsperoStore(path).close();
     const db = new DatabaseSync(path);
-    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
     db.exec('PRAGMA user_version = 99');
     db.close();
     expect(() => new ProsperoStore(path)).toThrow('newer Prospero');

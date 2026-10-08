@@ -9,6 +9,7 @@ export {
   startDotRun,
   finishDotRun,
 } from './domain';
+export { rehydrateDot, rehydrateDotRun } from './rehydration';
 export { DotError, type DotErrorCode } from './errors';
 export { DotLifecycleStatuses, DotRunStatuses } from './types';
 export type {

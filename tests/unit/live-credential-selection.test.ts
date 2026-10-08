@@ -17,7 +17,8 @@ beforeAll(async () => {
   await writeFile(
     entry,
     `export * from ${JSON.stringify(resolve('tests/acceptance/live-credential-selection.ts'))};
-     export { createLiveFixture } from ${JSON.stringify(resolve('tests/acceptance/live-fixtures.ts'))};`,
+     export { createLiveFixture } from ${JSON.stringify(resolve('tests/acceptance/live-fixtures.ts'))};
+     export { ProsperoStore } from ${JSON.stringify(resolve('packages/persistence/src'))};`,
   );
   const result = await Bun.build({
     entrypoints: [entry],
@@ -41,7 +42,7 @@ async function native(code: string) {
   import { tmpdir } from 'node:os';
   import { dirname, join } from 'node:path';
   import { prepareLiveCredentialSelection as prepare, copyLiveCredentialSelection as copy,
-    assertLiveCredentialProfile as owned, createLiveFixture } from ${JSON.stringify(moduleUrl)};
+    assertLiveCredentialProfile as owned, createLiveFixture, ProsperoStore } from ${JSON.stringify(moduleUrl)};
   const dispose = [];
   const approved = { beforeRead: () => true };
   const selected = { providerId: 'selected', expectedBaseUrl: 'https://api.example.test/v1',
@@ -157,6 +158,39 @@ test('not selecting Brave never reads or copies malformed unrelated credentials 
   `);
 });
 
+test('schema v3 selection preserves source Dot/Run state and excludes private rows from the copy', async () => {
+  await native(`
+    const f = fixture();rmSync(f.sourceDatabasePath);
+    const store = new ProsperoStore(f.sourceDatabasePath);
+    try {
+      store.saveProvider(metadata);
+      store.saveEncryptedCredential('selected', encrypted);
+      store.saveEncryptedCredential('brave-search', brave);
+      store.saveConversation({id:'private-chat',title:'Private',state:'idle',updatedAt:1});
+      store.setSetting('private', 'private setting');
+      const dots = store.dots();
+      const dot = dots.create({id:'private-dot',name:'Private Dot',goal:{text:'Private goal'},createdAt:1});
+      dots.createRun(dot.id, dot.revision, {id:'private-run',createdAt:2});
+    } finally { store.close(); }
+    const before = hash(readFileSync(f.sourceDatabasePath));
+    const files = readdirSync(f.root);
+    const prepared = await prepare(f.input, approved);
+    const profile = await copy(prepared.token, approved);dispose.push(() => profile.close());
+    await owned(profile);
+    const db = new DatabaseSync(profile.databasePath);
+    try {
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+      assert.deepEqual(db.prepare('SELECT id FROM providers').all().map((r) => r.id), ['selected']);
+      assert.deepEqual(db.prepare('SELECT id FROM credentials ORDER BY id').all().map((r) => r.id), ['brave-search','selected']);
+      assert.deepEqual([...db.prepare('SELECT ciphertext FROM credentials WHERE id=?').get('selected').ciphertext], [...encrypted]);
+      for (const table of ['dots','dot_runs','conversations','settings'])
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM '+table).get().n, 0);
+    } finally { db.close(); }
+    assert.equal(hash(readFileSync(f.sourceDatabasePath)), before);
+    assert.deepEqual(readdirSync(f.root), files);
+  `);
+});
+
 test('endpoint normalization binds the exact stored endpoint and model without replacing metadata', async () => {
   await native(`
     const f = fixture();
@@ -184,7 +218,7 @@ test('selected credential and provider payloads have strict type, size and schem
     }
     const f = fixture();edit(f.sourceDatabasePath, (db) => db.prepare('UPDATE providers SET payload=? WHERE id=?').run(' '.repeat(8193), 'selected'));
     await reason(prepare(f.input, approved), 'metadata');
-    const future = fixture();edit(future.sourceDatabasePath, (db) => db.exec('PRAGMA user_version=3'));
+    const future = fixture();edit(future.sourceDatabasePath, (db) => db.exec('PRAGMA user_version=4'));
     await reason(prepare(future.input, approved), 'metadata');
     const view = fixture();edit(view.sourceDatabasePath, (db) => db.exec('ALTER TABLE providers RENAME TO hidden_providers;CREATE VIEW providers AS SELECT * FROM hidden_providers;'));
     await reason(prepare(view.input, approved), 'metadata');

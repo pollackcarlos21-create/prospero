@@ -2,6 +2,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ActionJournalPort, SourceRecord } from '@prospero/core';
+import { createDotRepository, type DotRepository } from './dot-repository';
+import { migrateDots } from './dot-schema';
+export { DotRepositoryError, type DotRepositoryErrorCode } from './dot-errors';
+export type { DotRepository, DotLifecycleCommand, DotPage } from './dot-repository';
 import {
   createActionJournal,
   readActionPlans,
@@ -40,7 +44,7 @@ export class ProsperoStore {
     );
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number })
       .user_version;
-    if (version > 2) {
+    if (version > 3) {
       this.db.close();
       throw new Error('Database created by a newer Prospero version.');
     }
@@ -96,7 +100,21 @@ export class ProsperoStore {
       PRAGMA user_version = 2;
       COMMIT;
     `);
-    this.db.prepare('DELETE FROM web_sources WHERE expires_at<=?').run(Date.now());
+    if (version < 3) {
+      try {
+        migrateDots(this.db);
+      } catch (error) {
+        this.db.close();
+        throw error;
+      }
+    } else {
+      // Migration is additive only. Normal v3 startup retains the existing TTL maintenance.
+      this.db.prepare('DELETE FROM web_sources WHERE expires_at<=?').run(Date.now());
+    }
+  }
+  /** No startup recovery: pending/running states remain exactly as committed. */
+  dots(): DotRepository {
+    return createDotRepository(this.db);
   }
   saveConversation<T extends StoredConversation>(conversation: T): void {
     this.db

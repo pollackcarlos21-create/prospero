@@ -107,7 +107,7 @@ test('v1 migration preserves conversations, settings, providers, encrypted crede
     expect(store.sources('legacy')).toEqual([]);
     store.close();
     const migrated = new DatabaseSync(path);
-    expect(migrated.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+    expect(migrated.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
     migrated.close();
     new ProsperoStore(path).close();
   } finally {

@@ -234,7 +234,7 @@ function sourceFile(path: string): FileIdentity {
 }
 function schema(db: DatabaseSync) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
-  if (version !== 1 && version !== 2) reject('metadata');
+  if (version !== 1 && version !== 2 && version !== 3) reject('metadata');
   for (const [name, columns] of [
     [
       'providers',

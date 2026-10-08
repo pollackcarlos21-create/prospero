@@ -61,6 +61,7 @@
       "version": "0.2.0",
       "dependencies": {
         "@prospero/core": "workspace:*",
+        "@prospero/dots": "workspace:*",
       },
     },
     "packages/providers": {
