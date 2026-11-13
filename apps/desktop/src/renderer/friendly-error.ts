@@ -1,6 +1,17 @@
 // Only these fixed, public messages may be recovered from an IPC exception.
 // Never render an arbitrary exception or provider response body.
 const publicMessages = [
+  'Confirm that the request may already have happened.',
+  'Wait for this Dot to finish settling before reviewing its outcome.',
+  'This Dot wake needs an active research authorization, an available budget and a time before authorization expires.',
+  'This Dot research authorization is inactive, changed, expired or has reached its budget. Review it before continuing.',
+  'The Dot revision has changed. Read the current state before continuing.',
+  'Inspect or resolve the existing Dot approval before continuing.',
+  'Finish or stop the running task or Dot before starting another.',
+  'Choose valid exact queries, expiry and bounded research budgets.',
+  'This Dot approval expired or its configuration changed. Review a new request.',
+  'The Dot repository operation could not be committed or read.',
+  'The stored Dot or run state is invalid.',
   'Finish or stop the running task before starting another.',
   'Stop the active task first.',
   'Stop tasks using this provider before editing.',

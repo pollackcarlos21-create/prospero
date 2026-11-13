@@ -32,6 +32,7 @@
       "version": "0.2.0",
       "dependencies": {
         "@prospero/core": "workspace:*",
+        "@prospero/dots": "workspace:*",
         "@prospero/local-host": "workspace:*",
         "@prospero/persistence": "workspace:*",
         "@prospero/providers": "workspace:*",
@@ -41,6 +42,10 @@
     },
     "packages/core": {
       "name": "@prospero/core",
+      "version": "0.2.0",
+    },
+    "packages/dots": {
+      "name": "@prospero/dots",
       "version": "0.2.0",
     },
     "packages/local-host": {
@@ -57,6 +62,7 @@
       "version": "0.2.0",
       "dependencies": {
         "@prospero/core": "workspace:*",
+        "@prospero/dots": "workspace:*",
       },
     },
     "packages/providers": {
@@ -187,6 +193,8 @@
     "@prospero/core": ["@prospero/core@workspace:packages/core"],
 
     "@prospero/desktop": ["@prospero/desktop@workspace:apps/desktop"],
+
+    "@prospero/dots": ["@prospero/dots@workspace:packages/dots"],
 
     "@prospero/local-host": ["@prospero/local-host@workspace:packages/local-host"],
 

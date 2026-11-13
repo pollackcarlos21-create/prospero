@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@prospero/core": "workspace:*"
+    "@prospero/core": "workspace:*",
+    "@prospero/dots": "workspace:*"
   }
 }

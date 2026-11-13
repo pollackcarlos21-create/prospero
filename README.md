@@ -4,13 +4,20 @@
 
 Prospero is a desktop personal agent that runs on your computer. It holds ongoing conversations, breaks down tasks, reads local material, and changes files or runs commands with your approval. Prospero is an independent personal agent product; Ariel is a separate coding agent project.
 
-![Prospero desktop task timeline](docs/screenshots/conversation-dark.png)
+![Prospero desktop task timeline](docs/screenshots/dots-dark-workbench.png)
+
+## Agent workbench
+
+The workbench supports Light, Dark, and System appearance, a half-transparent blurred sidebar, large rounded borderless surfaces, and monochrome halos. Prospero is presented as a larger wordmark without a brand icon; user messages align right and model responses align left with elapsed task time. Team mode is enabled through the team icon in the composer. The lead can use `collaborate` to dispatch 1–3 parallel workers per batch, with at most six workers per user turn. Review the delegation preview before workers start; each uses the selected model and the task's explicit file scopes, with independent approvals for effects.
+
+Expand the team records or an individual worker in the team panel to inspect its trace, approve requests, or stop it individually. Stopping the lead cancels and joins all workers. Reports, terminal states, and source receipts return to the lead for synthesis; subsequent batches receive prior team reports. Restart preserves the team hierarchy without resuming work. Workers have eight model turns and sixteen tool calls each. Nested delegation and model routing are not supported. Shared file scopes retain the existing approval and stale-write checks; they are not an OS sandbox. See the [implementation and validation record](docs/TEAM-WORKBENCH.md).
 
 ## Features
 
 - OpenAI-compatible Chat Completions with configurable endpoints, models, streaming, and tool calling.
 - A multi-turn agent loop that feeds tool results back to the model until a task completes, fails, is cancelled, or reaches its limits.
 - Local conversations, task timelines, workspaces, settings, and explicit Memory.
+- Persistent Dots with bounded research steps, saved progress and cross-Run context, exact approvals, one-shot wakes, and a review inbox with silent reminders. App Quit stops execution; the full Dots goal remains in progress. See the [implementation record](docs/DOTS-DELIVERY.md).
 - Local tools: `read_file`, `list_directory`, `get_file_info`, `search_files`, `write_file`, `shell`, and `execute_plan`. Research tools: `authorize_research`, `web_search`, `fetch_page`, and `fetch_source`.
 - Explicit read/write scopes across multiple folders. Copy, move, rename, directory creation, text writes, and limited macOS actions use immutable Action Plans, one batch approval, and a durable journal for each action.
 - A separate `@prospero/web` package for Brave Search / Tavily, public HTTPS page extraction, source fingerprints, and citations. Web access is disabled by default. Individual requests or immutable research scopes require approval in the main process; each search provider has its own securely stored credential.
@@ -141,7 +148,7 @@ On 2026-10-06, the owner personally tried the product, confirmed online access, 
 Web Search connection tests accept draft or saved Brave / Tavily keys, issue one fixed query, and save neither settings nor sources. They may consume search credits. Task credential initialization has a thirty-second limit; Stop does not wait for the OS response, and late responses cannot start tasks. Packaging can use `PROSPERO_ELECTRON_ZIP_DIR` to select an existing matching Electron ZIP directory and disable downloading entirely.
 
 - Validation targets macOS arm64. Windows/Linux packaging is unverified.
-- The app runs one task at a time. When model input exceeds the core's 192 KiB serialized request budget, older complete message groups receive execution-only summaries. The latest user request and latest complete tool group retain their original text; full conversations remain stored. Summaries grant no permissions, are not persisted or displayed in the renderer, and consume turn/time budgets. Uncompressible oversized input stops safely. Byte budgets are not provider token-context limits; real summary fidelity remains unverified.
+- The app runs one lead task at a time. Team mode adds up to three parallel worker agents per batch and six per user turn, using the selected model. Each worker is limited to eight model turns and sixteen tool calls; nested delegation is disabled. When model input exceeds the core's 192 KiB serialized request budget, older complete message groups receive execution-only summaries. The latest user request and latest complete tool group retain their original text; full conversations remain stored. Summaries grant no permissions, are not persisted or displayed in the renderer, and consume turn/time budgets. Uncompressible oversized input stops safely. Byte budgets are not provider token-context limits; real summary fidelity remains unverified.
 - Only standard streaming Chat Completions/tool_calls are supported: no custom headers, legacy function_call, or Responses API.
 - Structured copy/move/rename handles ordinary files up to 32 MiB without overwriting existing targets. Text writes are limited to 256 KiB with complete diffs. Directory copy/deletion is non-recursive; Trash uses a native adapter. Batches execute sequentially, are not cross-file atomic transactions, and do not roll back completed effects.
 - File information reports filesystem modification/creation times, not download times. Directory scans cover at most 20,000 entries and return complete JSON with a nextCursor; directory changes require relisting. A batch has at most twenty-five actions, with separate 128 MiB limits for retained content and copy/move/write bytes.

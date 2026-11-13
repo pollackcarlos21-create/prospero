@@ -4,13 +4,22 @@
 
 Prospero 是一个运行在本机的 desktop personal agent。它能持续对话、拆解任务、读取本地资料，并在你批准后修改文件或运行命令。它是独立的个人 Agent 产品；Ariel 是另一个 coding agent 项目。
 
-![Prospero desktop task timeline](docs/screenshots/conversation-dark.png)
+![Prospero desktop task timeline](docs/screenshots/dots-dark-workbench.png)
+
+## 多 agent 工作台
+
+界面支持 Light、Dark 和 System 三种外观，侧栏为 50% 透明模糊，表面采用大圆角、无边框与黑白光晕。Prospero 品牌字号增加 50% 并移除品牌图标；用户消息靠右、模型消息靠左，并显示实际任务耗时。输入框的团队图标默认启用；点击可切换到单 agent 模式。主 agent 可通过 `collaborate` 拆分任务，一次并行 1–3 个子 agent，每次用户请求最多 6 个。派发前展示任务预览并请求一次性确认，子 agent 使用当前模型和文件访问范围，各自的写入、命令和网络操作仍需审批。
+
+团队总记录和每个子 agent 的执行记录均可展开收起、处理审批并单独停止；主任务的 Stop 会取消并等待全部子 agent。批次完成后，主 agent 收到带状态和来源的结果并汇总，下一批可读取已有团队报告。失败、停止及中断不会标为成功，重启保留记录且不自动重跑。当前每个子 agent 最多 8 次模型轮转、16 次工具调用；不支持嵌套派发或跨模型路由。子 agent 共享文件访问范围，文件写入仍由现有审批和 stale-write 检查保护，不提供操作系统级隔离。
+
+见 [本次实现与验证记录](docs/TEAM-WORKBENCH.md)。
 
 ## Features
 
 - OpenAI-compatible Chat Completions：自定义 endpoint、model、streaming 与 tool calling。
 - 真实多轮 Agent loop：工具结果回到模型，直到完成、失败、取消或达到限额。
 - 本地 conversations、task timeline、workspace、settings 和显式 Memory。
+- Persistent Dots：有限研究步骤、持久进展与跨 Run 上下文、准确审批、一次性唤醒，以及带静音提醒的待处理列表。Quit 停止执行，完整 Dots 仍在推进；见 [实现记录](docs/DOTS-DELIVERY.md)。
 - 本地工具 `read_file`、`list_directory`、`get_file_info`、`search_files`、`write_file`、`shell`、`execute_plan`；研究工具 `authorize_research`、`web_search`、`fetch_page`、`fetch_source`。
 - 明确的多根 read/write 文件范围；普通文件复制、移动、重命名、建目录、文本写入及窄 macOS actions，使用不可变 Action Plan 一次批量审批与逐动作 durable journal。
 - 独立 `@prospero/web`：Brave Search / Tavily、公开 HTTPS 正文提取、来源指纹与 citations；默认关闭，单次请求或不可变研究范围均须 main 批准。两种搜索凭据分别存入 safeStorage。
@@ -141,7 +150,7 @@ E2E 使用本地 fake OpenAI-compatible server，启动真实 Electron，保留�
 Web Search settings 的 Test search connection 可检测待保存或已保存的 Brave / Tavily key：只发送一次固定查询，不保存设置或来源，可能消耗搜索额度。启动任务的凭据初始化最长 30 秒，Stop 不等待系统回答，晚到响应不再启动任务。打包可设置 `PROSPERO_ELECTRON_ZIP_DIR` 指向已有匹配版本的 Electron ZIP 目录；此路径让 packager 完全关闭下载器。
 
 - macOS arm64 为本次验证目标；未验证 Windows/Linux packaging。
-- 当前 App 一次只执行一个 task。模型输入超过 192 KiB core request 预算时，较早的完整消息组会生成 execution-only 摘要；最新用户请求和最新完整工具组保持原文，完整会话继续保留。摘要不授予权限、不持久化、不在 renderer 展示，且额外调用消耗 turn/time 预算。不可压缩的超大输入安全停止；字节预算不等于所有 provider 的 token context limit，真实摘要保真仍待验证。
+- 当前 App 一次执行一个主 task，团队模式可并行执行该 task 派发的子 agent。模型输入超过 192 KiB core request 预算时，较早的完整消息组会生成 execution-only 摘要；最新用户请求和最新完整工具组保持原文，完整会话继续保留。摘要不授予权限、不持久化、不在 renderer 展示，且额外调用消耗 turn/time 预算。不可压缩的超大输入安全停止；字节预算不等于所有 provider 的 token context limit，真实摘要保真仍待验证。
 - 只支持标准 streaming Chat Completions/tool_calls；无 custom headers、legacy function_call 或 Responses API。
 - structured copy/move/rename 只处理不超过 32 MiB 的普通文件，不覆盖现有目标；文本写入限 256 KiB，展示完整 diff。目录非递归复制/删除；Trash 走原生 adapter。批次逐项执行，不是跨文件原子事务，也不回滚已完成效果。
 - 文件信息使用 filesystem modifiedAt/createdAt，不宣称它们是下载时间。目录最多扫描 20,000 entries；输出为带 nextCursor 的完整 JSON，目录变化后必须重新列举。批次最多 25 actions，累计保留内容和 copy/move/write 字节分别限 128 MiB。

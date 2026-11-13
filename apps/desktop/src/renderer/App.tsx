@@ -1,3 +1,4 @@
+import type { DotSupervisionSnapshot } from '../bridge';
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { PermissionDecision, PermissionRequest } from '@prospero/core';
 import type {
@@ -13,12 +14,16 @@ import type {
 } from '../bridge';
 import { ConversationStore, activeStates, statusLabel, summaryOf } from './conversation-store';
 import { Settings, type SettingsTab } from './Settings';
-import { Mark, Timeline } from './Timeline';
+import { Timeline } from './Timeline';
+import { statusTone } from './task-presentation';
 import { friendlyError } from './friendly-error';
 import { ComposerDrafts } from './composer-drafts';
 import { CommandPalette, ConversationSheet, type PaletteCommand } from './mac-dialogs';
+import { TeamPanel } from './TeamPanel';
 import { ScopeSheet } from './ScopeSheet';
-const initialSettings: SettingsValue = { theme: 'system', askBeforeReads: false, memory: [] };
+import { DotsPanel } from './DotsPanel';
+import type { Dot } from '@prospero/dots';
+const initialSettings: SettingsValue = { theme: 'light', askBeforeReads: false, memory: [] };
 export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
   const store = useRef(new ConversationStore()).current;
   const drafts = useRef(new ComposerDrafts()).current;
@@ -29,6 +34,15 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
     version: '0.2.0',
   });
   const [selected, setSelected] = useState<string>();
+  const [dotMode, setDotMode] = useState(false);
+  const [dots, setDots] = useState<readonly Dot[]>([]);
+  const [selectedDot, setSelectedDot] = useState<string>();
+  const [supervision, setSupervision] = useState<DotSupervisionSnapshot>({
+    sequence: -1,
+    items: [],
+    more: false,
+  });
+  const [createDotVersion, setCreateDotVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [collapsed, setCollapsed] = useState(false);
@@ -50,6 +64,7 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
     (conversation: Conversation, immediate = true) => {
       if (immediate) store.put(conversation);
       else store.queue(conversation);
+      if (conversation.parentId) return;
       const summary = summaryOf(conversation);
       setData((previous) => {
         const current = previous.conversations.find((value) => value.id === conversation.id);
@@ -75,6 +90,7 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
   );
   const select = useCallback(
     async (id: string) => {
+      setDotMode(false);
       const token = ++restoreVersion.current;
       selection.current = id;
       setSelected(id);
@@ -99,11 +115,36 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
     const unsubscribe = bridge.onEvent((event) => {
       if (!mounted) return;
       if (event.type === 'bootstrap') setData(event.data);
-      else if (event.type === 'desktop-action') desktopAction.current(event);
+      else if (event.type === 'dot-supervision')
+        setSupervision((previous) =>
+          event.snapshot.sequence >= previous.sequence ? event.snapshot : previous,
+        );
+      else if (event.type === 'open-dot') {
+        restoreVersion.current++;
+        setDotMode(true);
+        setSelectedDot(event.dotId);
+        setCollapsed(false);
+        setQuery('');
+        setSettingsTab(undefined);
+        setPalette(false);
+        setScopeSheet(false);
+        setDeleting(undefined);
+        setRenaming(undefined);
+      } else if (event.type === 'desktop-action') desktopAction.current(event);
       else if (event.type === 'desktop-appearance')
         setData((previous) => ({ ...previous, appearance: event.appearance }));
-      else upsert(event.conversation, false);
+      else if (event.type === 'conversation') upsert(event.conversation, false);
     });
+    if (bridge.dots?.supervision)
+      void bridge.dots
+        .supervision()
+        .then((snapshot) => {
+          if (mounted)
+            setSupervision((previous) =>
+              snapshot.sequence >= previous.sequence ? snapshot : previous,
+            );
+        })
+        .catch(() => {});
     bridge
       .bootstrap()
       .then((value) => {
@@ -169,6 +210,7 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
   }, []);
   const newTask = useCallback(() => {
     if (creating || loading) return;
+    setDotMode(false);
     setPalette(false);
     setScopeSheet(false);
     setSettingsTab(undefined);
@@ -325,7 +367,7 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
         } else if (scopeSheet) {
           closeScopes();
           event.preventDefault();
-        } else if (selected && activeStates.has(store.get(selected)?.state ?? '')) {
+        } else if (!dotMode && selected && activeStates.has(store.get(selected)?.state ?? '')) {
           event.preventDefault();
           void bridge
             .stopTask(selected)
@@ -349,6 +391,7 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
     store,
     scopeSheet,
     closeScopes,
+    dotMode,
   ]);
   async function remove(id: string) {
     try {
@@ -407,13 +450,12 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
     <div className={`desktop-app ${collapsed ? 'sidebar-collapsed' : ''}`}>
       <aside
         className="sidebar"
-        aria-label="Conversations"
+        aria-label={dotMode ? 'Dots' : 'Conversations'}
         inert={modalOpen || collapsed || undefined}
         aria-hidden={collapsed || undefined}
       >
         <div className="sidebar-title">
           <div className="brand">
-            <Mark small />
             <strong>Prospero</strong>
           </div>
           <button
@@ -425,15 +467,47 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
             {collapsed ? '›' : '‹'}
           </button>
         </div>
+        {bridge?.dots && (
+          <nav className="workspace-sections" aria-label="Workspace sections">
+            <button type="button" aria-pressed={!dotMode} onClick={() => setDotMode(false)}>
+              Chat
+            </button>
+            <button
+              type="button"
+              aria-label="Dots"
+              aria-pressed={dotMode}
+              onClick={() => setDotMode(true)}
+            >
+              Dots
+              {supervision.items.length > 0 && (
+                <span className="muted" aria-hidden="true">
+                  {' '}
+                  · {supervision.items.length}
+                  {supervision.more ? '+' : ''}
+                </span>
+              )}
+            </button>
+          </nav>
+        )}
         <button
           type="button"
           className="new-task"
-          aria-label="New task"
+          title={dotMode ? 'New Dot' : 'New task · ⌘ N'}
+          aria-label={dotMode ? 'New Dot' : 'New task'}
           disabled={loading || creating}
-          onClick={newTask}
+          onClick={
+            dotMode
+              ? () => {
+                  setSelectedDot(undefined);
+                  setCreateDotVersion((value) => value + 1);
+                }
+              : newTask
+          }
         >
           <span>+</span>
-          <span className="sidebar-label">{creating ? 'Creating…' : 'New task'}</span>
+          <span className="sr-only">
+            {dotMode ? 'New Dot' : creating ? 'Creating…' : 'New task'}
+          </span>
           <kbd>⌘ N</kbd>
         </button>
         <div
@@ -442,29 +516,58 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
           inert={collapsed || undefined}
         >
           <div className="sidebar-search">
-            <span aria-hidden="true">⌕</span>
             <input
-              aria-label="Search conversations"
+              aria-label={dotMode ? 'Search Dots' : 'Search conversations'}
               ref={search}
-              placeholder="Search tasks"
+              placeholder={dotMode ? 'Search Dots' : 'Search tasks'}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
-            <kbd>⌕</kbd>
           </div>
-          <ConversationList
-            conversations={data.conversations}
-            query={query}
-            selected={selected}
-            onSelect={select}
-            onDelete={(id) => setDeleting(id)}
-            onContextMenu={contextMenu}
-          />
+          {dotMode ? (
+            <section className="conversation-list" aria-label="Saved Dots">
+              {dots
+                .filter((dot) =>
+                  `${dot.name} ${dot.goal.text}`.toLowerCase().includes(query.toLowerCase()),
+                )
+                .map((dot) => (
+                  <div
+                    className={`conversation-row ${selectedDot === dot.id ? 'selected' : ''}`}
+                    key={dot.id}
+                  >
+                    <button
+                      type="button"
+                      className="conversation-select"
+                      aria-label={`Open Dot ${dot.name}`}
+                      aria-current={selectedDot === dot.id ? 'page' : undefined}
+                      title={`${dot.name} · ${dot.lifecycle}`}
+                      onClick={() => setSelectedDot(dot.id)}
+                    >
+                      <span
+                        className={`conversation-dot status-light ${dot.inFlightRunId ? 'working' : statusTone(dot.lifecycle)}`}
+                        aria-hidden="true"
+                      />
+                      <span>{dot.name}</span>
+                    </button>
+                  </div>
+                ))}
+              {!dots.length && <p className="sidebar-empty">Your Dots will appear here.</p>}
+            </section>
+          ) : (
+            <ConversationList
+              conversations={data.conversations}
+              query={query}
+              selected={selected}
+              onSelect={select}
+              onDelete={(id) => setDeleting(id)}
+              onContextMenu={contextMenu}
+            />
+          )}
         </div>
         <div className="sidebar-bottom">
           <button type="button" aria-label="Open settings" onClick={() => openSettings()}>
             <span aria-hidden="true">⚙</span>
-            <span className="sidebar-label">Settings</span>
+            <span className="sr-only">Settings</span>
             <kbd>⌘ ,</kbd>
           </button>
           {!collapsed && (
@@ -491,30 +594,49 @@ export function App({ bridge = window.prospero }: { bridge?: DesktopBridge }) {
         )}
         {loading ? (
           <div className="loading-state" role="status">
-            <Mark />
             <p>Opening your workspace…</p>
           </div>
         ) : (
-          <ConversationPane
-            key={selected ?? 'welcome'}
-            id={selected}
-            store={store}
-            drafts={drafts}
-            bridge={bridge}
-            providers={data.providers}
-            settings={data.settings}
-            webSearch={data.webSearch}
-            composerRef={composer}
-            onCreate={create}
-            onUpdate={upsert}
-            onWorkspace={chooseWorkspace}
-            onFiles={attachFiles}
-            onScopes={() => setScopeSheet(true)}
-            onSettings={openSettings}
-            onContextMenu={contextMenu}
-            collapsed={collapsed}
-            onExpandSidebar={() => setCollapsed(false)}
-          />
+          <>
+            {bridge?.dots && (
+              <DotsPanel
+                supervision={supervision}
+                api={bridge.dots}
+                bridge={bridge}
+                active={dotMode}
+                selected={selectedDot}
+                createVersion={createDotVersion}
+                onSelect={setSelectedDot}
+                onList={setDots}
+                providers={data.providers}
+                defaultProviderId={data.settings.defaultProviderId}
+                webSearchReady={!!data.webSearch?.enabled && !!data.webSearch?.hasApiKey}
+                onSettings={() => openSettings('Models')}
+              />
+            )}
+            {!dotMode && (
+              <ConversationPane
+                key={selected ?? 'welcome'}
+                id={selected}
+                store={store}
+                drafts={drafts}
+                bridge={bridge}
+                providers={data.providers}
+                settings={data.settings}
+                webSearch={data.webSearch}
+                composerRef={composer}
+                onCreate={create}
+                onUpdate={upsert}
+                onWorkspace={chooseWorkspace}
+                onFiles={attachFiles}
+                onScopes={() => setScopeSheet(true)}
+                onSettings={openSettings}
+                onContextMenu={contextMenu}
+                collapsed={collapsed}
+                onExpandSidebar={() => setCollapsed(false)}
+              />
+            )}
+          </>
         )}
       </main>
       {settingsTab && (
@@ -625,7 +747,7 @@ const ConversationList = memo(function ConversationList({
                 onClick={() => void onSelect(conversation.id)}
               >
                 <span
-                  className={`conversation-dot ${activeStates.has(conversation.state) ? 'active' : ''}`}
+                  className={`conversation-dot status-light ${statusTone(conversation.state)}`}
                   aria-hidden="true"
                 />
                 <span>{conversation.title}</span>
@@ -690,6 +812,7 @@ function ConversationPane({
   const conversation = useSyncExternalStore(subscribe, snapshot);
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
+  const [teamMode, setTeamMode] = useState(true);
   const [pickerBusy, setPickerBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const active = activeStates.has(conversation?.state ?? '');
@@ -735,7 +858,8 @@ function ConversationPane({
           current = await bridge.selectProvider(current.id, provider.id);
           onUpdate(current);
         }
-        await bridge.sendTask(current.id, text);
+        if (teamMode && bridge.sendTeamTask) await bridge.sendTeamTask(current.id, text);
+        else await bridge.sendTask(current.id, text);
         return true;
       } catch (error) {
         setError(
@@ -749,7 +873,7 @@ function ConversationPane({
         setSending(false);
       }
     },
-    [bridge, id, store, onCreate, onSettings, onUpdate, provider],
+    [bridge, id, store, onCreate, onSettings, onUpdate, provider, teamMode],
   );
   const stop = useCallback(async () => {
     if (!id) return;
@@ -852,7 +976,7 @@ function ConversationPane({
                     fileMenu(conversation.workspace ?? '');
                   }}
                 >
-                  ▤ {conversation.workspace.split('/').filter(Boolean).pop()}
+                  {conversation.workspace.split('/').filter(Boolean).pop()}
                 </button>
               ) : (
                 <button
@@ -865,11 +989,11 @@ function ConversationPane({
                 </button>
               )}
               <span
-                className={`execution-status ${active ? 'active' : ''} ${conversation?.state === 'failed' ? 'failed' : ''}`}
+                className={`execution-status ${statusTone(conversation?.state ?? 'idle')}`}
                 role="status"
                 data-testid="execution-status"
               >
-                <span />
+                <span className={`status-light ${statusTone(conversation?.state ?? 'idle')}`} />
                 {statusLabel(conversation?.state ?? 'idle')}
               </span>
             </div>
@@ -881,7 +1005,6 @@ function ConversationPane({
           onClick={() => onSettings('Models')}
           title="Manage model providers"
         >
-          <span>◇</span>
           {provider?.displayName ?? 'Connect a model'}
         </button>
       </header>
@@ -911,6 +1034,7 @@ function ConversationPane({
       ) : (
         <Welcome />
       )}
+      <TeamPanel agents={conversation?.team ?? []} bridge={bridge} store={store} />
       <div className="composer-region">
         {error && (
           <div role="alert" className="inline-error">
@@ -932,7 +1056,7 @@ function ConversationPane({
                   fileMenu(path);
                 }}
               >
-                ▤ {path.split('/').pop()}
+                {path.split('/').pop()}
               </button>
             ))}
           </section>
@@ -946,6 +1070,8 @@ function ConversationPane({
           stopping={stopping}
           providerId={providerId}
           providers={providers}
+          teamMode={teamMode}
+          onTeamMode={() => setTeamMode(!teamMode)}
           onSend={send}
           onStop={stop}
           onWorkspace={pickWorkspace}
@@ -963,7 +1089,6 @@ function ConversationPane({
           >
             {webSetup.label}
           </button>{' '}
-          · Prospero can make mistakes. Review file changes and commands before approving.
         </p>
       </div>
     </div>
@@ -973,9 +1098,7 @@ const Welcome = memo(function Welcome() {
   return (
     <section className="welcome">
       <div className="welcome-heading">
-        <Mark />
         <h2>What would you like to do?</h2>
-        <p>A little clarity. A task taken care of.</p>
       </div>
     </section>
   );
@@ -989,6 +1112,8 @@ const Composer = memo(function Composer({
   stopping,
   providerId,
   providers,
+  teamMode,
+  onTeamMode,
   onSend,
   onStop,
   onWorkspace,
@@ -1005,6 +1130,8 @@ const Composer = memo(function Composer({
   stopping: boolean;
   providerId: string;
   providers: ProviderConfig[];
+  teamMode: boolean;
+  onTeamMode: () => void;
   onSend: (text: string) => Promise<boolean>;
   onStop: () => Promise<void>;
   onWorkspace: () => Promise<void>;
@@ -1087,15 +1214,42 @@ const Composer = memo(function Composer({
           >
             ＋
           </button>
+          <button
+            type="button"
+            className="icon-button team-toggle"
+            aria-label="Agent team mode"
+            aria-pressed={teamMode}
+            title={teamMode ? 'Team mode · up to 3 parallel agents, 6 per turn' : 'Solo mode'}
+            disabled={active || busy}
+            onClick={onTeamMode}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="6" r="2.5" />
+              <circle cx="5" cy="17" r="2.5" />
+              <circle cx="19" cy="17" r="2.5" />
+              <path d="M10.5 8.5 6.5 14M13.5 8.5l4 5.5M8 17h8" />
+            </svg>
+          </button>
           <span className="toolbar-divider" />
           <button
             type="button"
-            className="text-button scope-control"
+            className="icon-button scope-control"
+            title="File access"
             aria-label="File scopes"
             disabled={active || busy}
             onClick={onScopes}
           >
-            File access
+            ◈
           </button>
           {providers.length ? (
             <select
@@ -1116,7 +1270,7 @@ const Composer = memo(function Composer({
             </select>
           ) : (
             <button type="button" className="text-button" onClick={onSettings}>
-              ◇ Add a model
+              Add a model
             </button>
           )}
         </div>
@@ -1129,7 +1283,7 @@ const Composer = memo(function Composer({
             onClick={() => void onStop()}
           >
             <span>■</span>
-            {stopping ? 'Stopping…' : 'Stop'}
+            <span className="sr-only">{stopping ? 'Stopping…' : 'Stop'}</span>
           </button>
         ) : (
           <button

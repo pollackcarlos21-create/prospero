@@ -17,10 +17,11 @@ React renderer → typed preload API → validated IPC → DesktopService
 | Owner | 职责 | 禁止依赖 |
 | --- | --- | --- |
 | `@prospero/core` | messages、state machine、system policy、loop、permission semantics、limits、completion/failure/cancel | Electron、React、provider protocol、Node I/O、DB |
+| `@prospero/dots` | stable identity/goal、Dot/Run lifecycle、不可变转换与可信 rehydration | SQLite、Node I/O、Electron、React、provider、scheduler |
 | `@prospero/providers` | fetch、OpenAI wire mapping、bounded SSE parser、connection test、安全错误 | agent policy、tool execution、persistence |
 | `@prospero/tools` | host-neutral tool metadata、JSON schemas、strict argument checks、limits | Node/Electron I/O |
 | `@prospero/local-host` | 文件边界、完整 diff、写入验证、进程环境/执行/清理 | React、renderer |
-| `@prospero/persistence` | SQLite schema/version migration、snapshots、execution summaries、encrypted credential blobs | provider、React、Electron |
+| `@prospero/persistence` | SQLite schema/version migration、snapshots、execution summaries、encrypted credential blobs；M003 独立 Dot/Run repository | provider、React、Electron |
 | `apps/desktop` main | composition、credential encryption、native window/menu/dialog/clipboard/notification、IPC、session grants、durability | renderer runtime |
 | `apps/desktop` renderer | tokens、timeline、diff、settings、composer、domain UI store | privileged Node/environment APIs |
 
@@ -46,9 +47,9 @@ Core 对 network effects 仍强制调用 PermissionPort。Main 仅对当前 host
 
 ## Durability and concurrency
 
-SQLite WAL 保存 conversations/messages/timeline、provider metadata、settings、workspace/files 和 execution summaries。每个离散事件保存快照；stream deltas 以 32 ms batch 发往 renderer，不逐 token 落盘。已完成或主动 Stop 的部分文本持久化；硬崩溃时当前未落盘 token 可能丢失，已保存历史仍保留。
+SQLite WAL 保存 conversations/messages/timeline、provider metadata、settings、workspace/files 和 execution summaries。每个离散事件保存快照；stream deltas 以 32 ms batch 发往 renderer，不逐 token 落盘。已完成或主动 Stop 的部分文本持久化；硬崩溃时当前未落盘 token 可能丢失，已保存历史仍保留。M003 在 schema v3 增加独立 `dots` / `dot_runs`，通过 `persistence → dots` 的可信 rehydration、revision CAS 与事务保存领域状态；不从 Conversation 自动生成 Dot。
 
-启动时所有非终态 executions 标为 interrupted，不自动继续工具。DesktopService 同时只保留一个 active task；provider save/test 独占该 provider，防止 endpoint/credential mismatch。single-instance lock 防止两个窗口主机同时操作默认 profile。不同 isolated test profiles 可独立启动。
+既有 Chat 启动时将非终态 executions 标为 interrupted，不自动继续工具。M003 Dot repository 普通 read/数据库重开保留实际 pending/running 状态，不触发恢复；独立 Dot Startup Recovery 属于后续 M004。DesktopService 同时只保留一个 active task；provider save/test 独占该 provider，防止 endpoint/credential mismatch。single-instance lock 防止两个窗口主机同时操作默认 profile，不能代替仓储 CAS。不同 isolated test profiles 可独立启动。
 
 凭据明文仅在 main 内使用；加密 envelope 同时包含 provider id 与规范化 endpoint。每次读取必须匹配 main 当前期望的绑定，避免密钥已保存、provider metadata 保存失败后把新密钥交给旧 endpoint。旧格式密文首次成功读取时，在相同 reservation 内迁移；这依赖原来保存的 endpoint，不能追溯证明旧格式的历史绑定。
 
@@ -73,3 +74,9 @@ Electron main 管理 macOS window lifecycle。`hiddenInset` titlebar 保留系�
 Context menus 是 native Electron menus，使用 typed conversation/message/file targets。Main 提供 Rename/Delete confirmation actions，从保存的 message 读取 Copy 内容，并在 Reveal in Finder/Copy Path 前复核 workspace/attachment/known preview path。系统 clipboard 写入有大小限制且等待完成；renderer 没有 clipboard read API。持续至少 10 秒的任务完成时，窗口失焦才发送 silent、generic native notification，不含任务文本或路径。
 
 Visual tokens、soft surfaces、progressive disclosure 与 accessibility 约定见 [macOS-native UI](MACOS-NATIVE-UI.md)。
+
+## Dots Domain、仓储与获批后续路线
+
+[Dots Architecture / Domain / Persistence](DOTS_ARCHITECTURE.md) 保留 M001/M002 证据，并记录 2026-10-08 已实现且通过离线验证的 M003 与获批 M003–M016 路线。纯 `@prospero/dots` 增加 `rehydrateDot/rehydrateDotRun`；`ProsperoStore.dots()` 提供受约束的独立 repository。写入使用 `BEGIN IMMEDIATE` 与 revision 条件更新，Dot/Run pair 原子提交；可信 read 检查列/payload、owner 与当前 in-flight，历史 terminal Run 不必与当前 Dot revision 相等。查询有界，未知字段和损坏快照拒绝读取；v3 credential selection 继续只复制选中的密文与 provider metadata，不复制 Dots。
+
+M003 当前只达到 **Level 1 — Durable**。它不实现 Dot Startup Recovery、runner、checkpoint、approval、wake、scheduler 或 UI，也不改变现有关闭窗口与 Quit 行为。下一阶段仅建议 M004；后续执行仍复用 core，不提前提取 Tempest。M007 正式 service、M013 正常 UI 与 M016 完整 Research MVP 各自独立验收；当前离线通过不代表真实任务完成，真实验证仍为 `0/30`。

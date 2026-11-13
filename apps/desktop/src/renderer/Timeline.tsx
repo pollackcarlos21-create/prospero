@@ -7,18 +7,10 @@ import type {
 } from '@prospero/core';
 import type { ActionPlanRecord, ResearchPlanRecord, TimelineItem } from '../bridge';
 import { activeStates, statusLabel } from './conversation-store';
-import spectrumMark from '../../../../assets/icon.svg';
+import { statusTone, turnTimings } from './task-presentation';
 import { CitationText, PlanJournal, PlanPreview, planStatusLabel, Sources } from './ActionViews';
 import { DiffPreview } from './DiffPreview';
 import { ResearchJournal, ResearchPreview } from './ResearchViews';
-
-export function Mark({ small = false }: { small?: boolean }) {
-  return (
-    <span className={`brand-mark ${small ? 'small' : ''}`} aria-hidden="true">
-      <img src={spectrumMark} alt="" draggable={false} />
-    </span>
-  );
-}
 
 type DecisionHandler = (request: PermissionRequest, decision: PermissionDecision) => Promise<void>;
 export const Preview = memo(function Preview({
@@ -47,6 +39,9 @@ export const Preview = memo(function Preview({
             <code>{preview.path || preview.cwd}</code>
           </button>
         </div>
+      )}
+      {preview.kind === 'read' && preview.before && (
+        <pre className="team-assignment-preview">{preview.before}</pre>
       )}
       {preview.command && (
         <pre className="command-preview">
@@ -125,6 +120,16 @@ export const PermissionCard = memo(function PermissionCard({
       setBusy(false);
     }
   }
+  if (request.call.name === 'collaborate' && !pending)
+    return (
+      <div className="timeline-notice">
+        {decision === 'deny'
+          ? 'Delegation denied'
+          : decision
+            ? 'Delegation approved'
+            : 'Delegation not started'}
+      </div>
+    );
   return (
     <section
       className={`permission-card ${pending ? 'pending' : ''}`}
@@ -132,7 +137,10 @@ export const PermissionCard = memo(function PermissionCard({
       data-testid="permission-card"
     >
       <header>
-        <span className="tool-symbol">{request.preview.kind === 'shell' ? '>_' : '↗'}</span>
+        <span
+          className={`status-light ${pending ? 'working' : decision === 'deny' ? 'incomplete' : 'neutral'}`}
+          aria-hidden="true"
+        />
         <div>
           <strong>{request.preview.title}</strong>
           <p>
@@ -155,19 +163,22 @@ export const PermissionCard = memo(function PermissionCard({
       {pending && (
         <footer>
           <div className="permission-note">
-            {isPlan
-              ? 'One approval for this exact batch. Actions run in order and stop on changes, failure, or cancellation. Completed actions are not rolled back.'
-              : isResearch
-                ? 'One approval for these exact searches and bounded source fetches until expiry. Changing queries or limits requires a new preview. No local actions are approved.'
-                : request.preview.kind === 'write'
-                  ? 'This will change a local file.'
-                  : request.preview.kind === 'shell'
-                    ? 'Commands run with your user permissions.'
-                    : request.preview.kind === 'web'
-                      ? 'This request sends its query or URL to a web service. No local file access is granted.'
-                      : request.allowSession && request.permissionKey.startsWith('read:workspace:')
-                        ? 'Allow once reads only this request. Session approval allows reads, lists, and searches across this workspace for this conversation.'
-                        : 'Allow once grants access only for this request. Session approval applies to this attached file.'}
+            {request.call.name === 'collaborate'
+              ? 'Starts only these agents using the current model and its API budget. File changes, commands and web requests still require their own approvals.'
+              : isPlan
+                ? 'One approval for this exact batch. Actions run in order and stop on changes, failure, or cancellation. Completed actions are not rolled back.'
+                : isResearch
+                  ? 'One approval for these exact searches and bounded source fetches until expiry. Changing queries or limits requires a new preview. No local actions are approved.'
+                  : request.preview.kind === 'write'
+                    ? 'This will change a local file.'
+                    : request.preview.kind === 'shell'
+                      ? 'Commands run with your user permissions.'
+                      : request.preview.kind === 'web'
+                        ? 'This request sends its query or URL to a web service. No local file access is granted.'
+                        : request.allowSession &&
+                            request.permissionKey.startsWith('read:workspace:')
+                          ? 'Allow once reads only this request. Session approval allows reads, lists, and searches across this workspace for this conversation.'
+                          : 'Allow once grants access only for this request. Session approval applies to this attached file.'}
           </div>
           <div className="permission-actions">
             <button
@@ -237,6 +248,7 @@ const TimelineRow = memo(function TimelineRow({
   onFileMenu,
   sources,
   onOpenSource,
+  timing,
 }: {
   item: TimelineItem;
   pendingId?: string;
@@ -247,6 +259,7 @@ const TimelineRow = memo(function TimelineRow({
   onFileMenu?: (path: string) => void;
   sources: SourceRecord[];
   onOpenSource?: (id: string) => void;
+  timing?: string;
 }) {
   if (item.type === 'message' && item.message) {
     if (item.message.role === 'system' || item.message.role === 'tool' || !item.message.content)
@@ -261,9 +274,7 @@ const TimelineRow = memo(function TimelineRow({
       >
         <div className="message-author">
           {item.message.role === 'assistant' ? (
-            <>
-              <Mark small /> Prospero
-            </>
+            <span title="Elapsed task time">{timing ?? 'Prospero'}</span>
           ) : (
             <>
               You{' '}
@@ -275,7 +286,7 @@ const TimelineRow = memo(function TimelineRow({
           {onMessageMenu && (
             <button
               type="button"
-              className="icon-button message-action"
+              className="text-button message-action"
               aria-label="Message actions"
               onClick={() => onMessageMenu(item.id)}
             >
@@ -310,7 +321,10 @@ const TimelineRow = memo(function TimelineRow({
         data-testid="tool-card"
       >
         <summary>
-          <span className="tool-symbol">{item.preview?.kind === 'shell' ? '>_' : '▤'}</span>
+          <span
+            className={`status-light ${item.result ? statusTone(item.result.planOutcome?.status ?? (item.result.isError ? 'failed' : 'succeeded')) : activeStates.has(state) ? 'working' : 'incomplete'}`}
+            aria-hidden="true"
+          />
           <strong>{item.preview?.title || item.call.name}</strong>
           <span
             className={`tool-status ${item.result?.planOutcome ? `plan-status ${item.result.planOutcome.status}` : ''}`}
@@ -390,6 +404,13 @@ export const Timeline = memo(function Timeline({
   const scroll = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [away, setAway] = useState(false);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!activeStates.has(state)) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [state]);
+  const timing = turnTimings(items, now);
   useEffect(() => {
     if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [items, streamingText, pending]);
@@ -422,6 +443,7 @@ export const Timeline = memo(function Timeline({
               onFileMenu={onFileMenu}
               sources={sources}
               onOpenSource={onOpenSource}
+              timing={timing.messages.get(item.id)}
             />
           ))}
           {pending && !hasPendingRow && (
@@ -430,8 +452,8 @@ export const Timeline = memo(function Timeline({
           {streamingText && (
             <article className="message assistant streaming">
               <div className="message-author">
-                <Mark small /> Prospero{' '}
-                <span className="stream-indicator" role="img" aria-label="Streaming" />
+                <span title="Elapsed task time">{timing.current ?? 'Responding…'}</span>
+                <span className="status-light working" role="img" aria-label="Streaming" />
               </div>
               <div className="message-text" data-testid="streaming-text">
                 <CitationText text={streamingText} sources={sources} onOpen={onOpenSource} />
@@ -441,9 +463,9 @@ export const Timeline = memo(function Timeline({
           {!streamingText &&
             ['planning', 'model-request', 'model-continuation'].includes(state) && (
               <div className="thinking">
-                <Mark small />
+                <span className="status-light working" aria-hidden="true" />
                 <span>
-                  {statusLabel(state)}
+                  {timing.current ?? statusLabel(state)}
                   <span className="thinking-dots">…</span>
                 </span>
               </div>

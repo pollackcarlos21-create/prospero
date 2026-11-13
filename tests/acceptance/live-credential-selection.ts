@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ProviderConfig } from '../../apps/desktop/src/bridge';
-import { ProsperoStore } from '../../packages/persistence/src';
+import { ProsperoStore, SCHEMA_VERSION } from '../../packages/persistence/src';
 import { normalizeBaseUrl } from '../../packages/providers/src';
 import {
   captureLiveFixtureCheckpoint,
@@ -234,7 +234,13 @@ function sourceFile(path: string): FileIdentity {
 }
 function schema(db: DatabaseSync) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
-  if (version !== 1 && version !== 2) reject('metadata');
+  if (
+    typeof version !== 'number' ||
+    !Number.isSafeInteger(version) ||
+    version < 1 ||
+    version > SCHEMA_VERSION
+  )
+    reject('metadata');
   for (const [name, columns] of [
     [
       'providers',

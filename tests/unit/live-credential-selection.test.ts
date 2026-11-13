@@ -17,7 +17,9 @@ beforeAll(async () => {
   await writeFile(
     entry,
     `export * from ${JSON.stringify(resolve('tests/acceptance/live-credential-selection.ts'))};
-     export { createLiveFixture } from ${JSON.stringify(resolve('tests/acceptance/live-fixtures.ts'))};`,
+     export { createLiveFixture } from ${JSON.stringify(resolve('tests/acceptance/live-fixtures.ts'))};
+     export { ProsperoStore, SCHEMA_VERSION } from ${JSON.stringify(resolve('packages/persistence/src'))};
+     export { runAgent } from ${JSON.stringify(resolve('packages/core/src'))};`,
   );
   const result = await Bun.build({
     entrypoints: [entry],
@@ -41,7 +43,7 @@ async function native(code: string) {
   import { tmpdir } from 'node:os';
   import { dirname, join } from 'node:path';
   import { prepareLiveCredentialSelection as prepare, copyLiveCredentialSelection as copy,
-    assertLiveCredentialProfile as owned, createLiveFixture } from ${JSON.stringify(moduleUrl)};
+    assertLiveCredentialProfile as owned, createLiveFixture, ProsperoStore, SCHEMA_VERSION, runAgent } from ${JSON.stringify(moduleUrl)};
   const dispose = [];
   const approved = { beforeRead: () => true };
   const selected = { providerId: 'selected', expectedBaseUrl: 'https://api.example.test/v1',
@@ -157,6 +159,62 @@ test('not selecting Brave never reads or copies malformed unrelated credentials 
   `);
 });
 
+test('current-schema selection preserves source Dot/Run/checkpoint state and excludes private rows from the copy', async () => {
+  await native(`
+    const f = fixture();rmSync(f.sourceDatabasePath);
+    const store = new ProsperoStore(f.sourceDatabasePath);
+    try {
+      store.saveProvider(metadata);
+      store.saveEncryptedCredential('selected', encrypted);
+      store.saveEncryptedCredential('brave-search', brave);
+      store.saveConversation({id:'private-chat',title:'Private',state:'idle',updatedAt:1});
+      store.setSetting('private', 'private setting');
+      const dots = store.dots();
+      const dot = dots.create({id:'private-dot',name:'Private Dot',goal:{text:'Private goal'},createdAt:1});
+      const pending = dots.createRun(dot.id, dot.revision, {id:'private-run',createdAt:2});
+      const running = dots.startRun(dot.id, pending.run.id, pending.dot.revision, 3);
+      const finished = dots.finishRunWithCheckpoint(dot.id, running.run.id, running.dot.revision, {summary:'Private progress',completed:['Private fact'],next:['Private next step']}, 4);
+      const at=Date.now();
+      dots.createPolicy({id:'private-policy',dotId:dot.id,createdAt:at,expiresAt:at+3600000,provider:{id:metadata.id,baseUrl:metadata.baseUrl,model:metadata.model},configurationRevision:0,queries:[{query:'private query',maxResults:1}],allowDiscoveredPages:false,limits:{maxRuns:2,maxSearches:2,maxFetches:0,maxResponseBytes:1024*1024,maxModelTurns:16,maxModelRequestBytes:16*96*1024}},finished.dot.revision);
+      dots.scheduleWake({id:'private-wake',dotId:dot.id,policyId:'private-policy',createdAt:at,dueAt:at+60000},finished.dot.revision,{id:metadata.id,baseUrl:metadata.baseUrl,model:metadata.model},0);
+      const next = dots.createRun(dot.id, finished.dot.revision, {id:'next-private-run',createdAt:at,provider:{id:metadata.id,baseUrl:metadata.baseUrl,model:metadata.model},configurationRevision:0});
+      const active = dots.startRun(dot.id, next.run.id, next.dot.revision, Math.max(Date.now(),at));
+      const definition = {name:'web_search',description:'Offline fixture',inputSchema:{type:'object'},riskLevel:'read',effects:['network.search']};
+      const outcome = await runAgent({
+        limits:{maxModelTurns:8,maxContextBytes:96*1024},executionId:active.run.id,messages:[{role:'user',content:'Private bounded query'}],signal:new AbortController().signal,onEvent:()=>{},suspension:{},
+        model:{stream:async()=>({content:'',toolCalls:[{id:'private-call',name:'web_search',arguments:'{}'}],finishReason:'tool_calls'})},
+        permissions:{decide:async()=> 'suspend'},
+        host:{definitions:[definition],prepare:async(call)=>({call,definition,preview:{kind:'web',title:'Private query',query:'private query',effects:['network.search']},permissionKey:'private-key',requiresPermission:true,allowSession:false,onSuspended:()=>{},execute:async()=>{throw new Error('No network in a credential-copy fixture.');}})}
+      });
+      assert.equal(outcome.state,'suspended');
+      dots.createIntent({id:'private-intent',dotId:dot.id,runId:active.run.id,dotRevision:active.dot.revision,provider:{id:metadata.id,baseUrl:metadata.baseUrl,model:metadata.model},policyRevision:0,request:outcome.request,continuation:outcome.continuation,createdAt:Date.now(),expiresAt:outcome.continuation.pending.expiresAt});
+      const original=dots.intent('private-intent');const t=Date.now();
+      const approvedIntent=dots.decideIntent(original.id,original.revision,original.digest,'approve',t);
+      const dispatched=dots.dispatchIntent(original.id,approvedIntent.revision,original.digest,t);
+      const uncertain=dots.settleIntent(original.id,dispatched.revision,original.digest,{status:'unknown'},t);
+      dots.claimSupervisionAlerts(dots.supervisionPage().items,t);
+      dots.acknowledgeUnknown(dot.id,dots.get(dot.id).revision,uncertain.id,uncertain.revision,uncertain.digest,'Private human review note',t);
+
+    } finally { store.close(); }
+    const before = hash(readFileSync(f.sourceDatabasePath));
+    const files = readdirSync(f.root);
+    const prepared = await prepare(f.input, approved);
+    const profile = await copy(prepared.token, approved);dispose.push(() => profile.close());
+    await owned(profile);
+    const db = new DatabaseSync(profile.databasePath);
+    try {
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
+      assert.deepEqual(db.prepare('SELECT id FROM providers').all().map((r) => r.id), ['selected']);
+      assert.deepEqual(db.prepare('SELECT id FROM credentials ORDER BY id').all().map((r) => r.id), ['brave-search','selected']);
+      assert.deepEqual([...db.prepare('SELECT ciphertext FROM credentials WHERE id=?').get('selected').ciphertext], [...encrypted]);
+      for (const table of ['dots','dot_runs','dot_checkpoints','dot_intents','dot_intent_events','dot_policies','dot_policy_usage','dot_policy_approvals','dot_wakes','dot_wake_events','dot_intent_reviews','dot_alert_claims','conversations','settings'])
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM '+table).get().n, 0);
+    } finally { db.close(); }
+    assert.equal(hash(readFileSync(f.sourceDatabasePath)), before);
+    assert.deepEqual(readdirSync(f.root), files);
+  `);
+});
+
 test('endpoint normalization binds the exact stored endpoint and model without replacing metadata', async () => {
   await native(`
     const f = fixture();
@@ -184,7 +242,7 @@ test('selected credential and provider payloads have strict type, size and schem
     }
     const f = fixture();edit(f.sourceDatabasePath, (db) => db.prepare('UPDATE providers SET payload=? WHERE id=?').run(' '.repeat(8193), 'selected'));
     await reason(prepare(f.input, approved), 'metadata');
-    const future = fixture();edit(future.sourceDatabasePath, (db) => db.exec('PRAGMA user_version=3'));
+    const future = fixture();edit(future.sourceDatabasePath, (db) => db.exec('PRAGMA user_version='+(SCHEMA_VERSION+1)));
     await reason(prepare(future.input, approved), 'metadata');
     const view = fixture();edit(view.sourceDatabasePath, (db) => db.exec('ALTER TABLE providers RENAME TO hidden_providers;CREATE VIEW providers AS SELECT * FROM hidden_providers;'));
     await reason(prepare(view.input, approved), 'metadata');

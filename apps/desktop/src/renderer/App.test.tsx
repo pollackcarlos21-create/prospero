@@ -1,5 +1,21 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { Window } from 'happy-dom';
+import {
+  createDot,
+  createDotRun,
+  startDotRun,
+  finishDotRun,
+  createDotCheckpoint,
+  pauseDot,
+  resumeDot,
+  completeDot,
+  cancelDot,
+  archiveDot,
+  createDotResearchPolicy,
+  createDotWake,
+  recordDotReview,
+  rehydrateDotIntentReview,
+} from '@prospero/dots';
 import type {
   ActionPlan,
   PermissionDecision,
@@ -18,6 +34,13 @@ import type {
   Settings,
   WebSearchInput,
   WebSearchTestInput,
+  DotsBridge,
+  DotView,
+  DotControl,
+  DotReviewInput,
+  DotRequestHistoryView,
+  DotPage,
+  DotSupervisionSnapshot,
 } from '../bridge';
 
 const dom = new Window({ url: 'http://localhost' });
@@ -89,6 +112,7 @@ function permission(allowSession = false): PermissionRequest {
   };
 }
 class FakeBridge implements DesktopBridge {
+  dots?: DotsBridge;
   listeners = new Set<(event: DesktopEvent) => void>();
   data: Bootstrap = {
     conversations: [],
@@ -298,6 +322,113 @@ async function showPermission(bridge: FakeBridge, allowSession = false) {
   return request;
 }
 describe('desktop renderer with typed bridge', () => {
+  test('team toggle selects the team bridge and solo mode selects the ordinary bridge', async () => {
+    const bridge = new FakeBridge();
+    const sendTeamTask = mock(async (id: string, text: string) => {
+      await bridge.sendTask(id, text);
+    });
+    Object.assign(bridge, { sendTeamTask });
+    await newTask(bridge);
+    expect(
+      screen.getByRole('button', { name: 'Agent team mode' }).getAttribute('aria-pressed'),
+    ).toBe('true');
+    await send('Delegate the research');
+    expect(sendTeamTask).toHaveBeenCalledWith('task-1', 'Delegate the research');
+    await act(async () => {
+      bridge.update('task-1', { state: 'completed' });
+    });
+    await screen.findByRole('button', { name: 'Send task' });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent team mode' }));
+    await send('Work solo');
+    expect(sendTeamTask).toHaveBeenCalledTimes(1);
+    expect(bridge.sendTask).toHaveBeenLastCalledWith('task-1', 'Work solo');
+  });
+  test('child approval targets its own agent while the sidebar shows only the lead', async () => {
+    const bridge = await newTask();
+    const request = permission();
+    const child: Conversation = {
+      ...conversation('worker-1'),
+      parentId: 'task-1',
+      title: 'Research',
+      state: 'waiting-permission',
+      pendingPermission: request,
+      timeline: [{ id: 'permission-worker', at: Date.now(), type: 'permission', request }],
+    };
+    bridge.conversations.set(child.id, child);
+    await act(async () => {
+      bridge.update('task-1', { state: 'tool-running', team: [child] });
+    });
+    const team = await screen.findByRole('region', { name: 'Agent team' });
+    await within(team).findByTestId('permission-card');
+    expect(screen.queryByRole('button', { name: 'Open Research' })).toBeNull();
+    fireEvent.click(within(team).getByRole('button', { name: 'File actions' }));
+    await waitFor(() =>
+      expect(bridge.showContextMenu).toHaveBeenCalledWith({
+        kind: 'file',
+        conversationId: 'worker-1',
+        path: '/workspace/notes.md',
+      }),
+    );
+    fireEvent.click(within(team).getByRole('button', { name: 'Allow once' }));
+    await waitFor(() =>
+      expect(bridge.decidePermission).toHaveBeenCalledWith(
+        'worker-1',
+        request.requestId,
+        'allow-once',
+      ),
+    );
+  });
+  test('message headers use real turn timestamps and reset tool work for the next user request', async () => {
+    const bridge = await newTask();
+    await act(async () => {
+      bridge.update('task-1', {
+        state: 'completed',
+        timeline: [
+          {
+            id: 'u1',
+            at: 1000,
+            type: 'message',
+            message: { role: 'user', content: 'First question' },
+          },
+          {
+            id: 'a1',
+            at: 65000,
+            type: 'message',
+            message: { role: 'assistant', content: 'Initial response' },
+          },
+          {
+            id: 't1',
+            at: 66000,
+            type: 'tool',
+            call: { id: 'read-1', name: 'read_file', arguments: '{}' },
+            result: { content: 'Read actual fixture', isError: false },
+          },
+          {
+            id: 'a2',
+            at: 76000,
+            type: 'message',
+            message: { role: 'assistant', content: 'After the read' },
+          },
+          {
+            id: 'u2',
+            at: 80000,
+            type: 'message',
+            message: { role: 'user', content: 'Second question' },
+          },
+          {
+            id: 'a3',
+            at: 82000,
+            type: 'message',
+            message: { role: 'assistant', content: 'Next response' },
+          },
+        ],
+      });
+    });
+    expect(await screen.findByText('Thought for 1m 4s')).toBeTruthy();
+    expect(screen.getByText('Worked for 1m 15s')).toBeTruthy();
+    expect(screen.getByText('Thought for 2s')).toBeTruthy();
+    expect(document.querySelector('.message .brand-mark')).toBeNull();
+  });
   test('welcomes a fresh user and creates a real conversation', async () => {
     const bridge = await mount();
     expect(screen.getByText('What would you like to do?')).toBeTruthy();
@@ -880,7 +1011,7 @@ describe('desktop renderer with typed bridge', () => {
     expect(document.activeElement).toBe(first);
     fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(
-      within(dialog).getByRole('combobox', { name: 'Default provider' }),
+      within(dialog).getByRole('checkbox', { name: 'Dot review notifications' }),
     );
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(document.activeElement).toBe(settings));
@@ -1864,5 +1995,604 @@ describe('controlled research approval UI', () => {
     expect(events.textContent).not.toContain('Completed');
     expect(bridge.decideResearch).not.toHaveBeenCalled();
     expect(bridge.sendTask).not.toHaveBeenCalled();
+  });
+});
+
+function dotUiFixture(bridge: FakeBridge, populated = false) {
+  let created = populated;
+  let view: DotView = {
+    dot: createDot({
+      id: 'dot-ui',
+      name: 'Researcher',
+      goal: { text: 'Maintain a brief.' },
+      createdAt: 1,
+    }),
+    runs: [],
+    runCount: 0,
+    sequence: 0,
+  };
+  const progress: NonNullable<DotView['checkpoint']>[] = [];
+  const publish = () => {
+    bridge.emit({ type: 'dot', snapshot: structuredClone(view) });
+    return structuredClone(view);
+  };
+  const commands = {
+    pause: pauseDot,
+    resume: resumeDot,
+    complete: completeDot,
+    cancel: cancelDot,
+    archive: archiveDot,
+  };
+  const api = {
+    supervision: mock(
+      async (): Promise<DotSupervisionSnapshot> => ({ sequence: 0, items: [], more: false }),
+    ),
+    list: mock(async () => (created ? [view.dot] : [])),
+    get: mock(async (_id: string) => structuredClone(view)),
+    create: mock(async (input: { name: string; goal: string }) => {
+      view = {
+        ...view,
+        dot: createDot({
+          id: 'dot-ui',
+          name: input.name,
+          goal: { text: input.goal },
+          createdAt: 1,
+        }),
+      };
+      created = true;
+      return publish();
+    }),
+    run: mock(async (_id: string, revision: number, _providerId: string) => {
+      if (revision !== view.dot.revision) throw new Error('Revision changed.');
+      const pending = createDotRun(view.dot, {
+        id: `run-${view.runCount}`,
+        createdAt: view.dot.updatedAt + 1,
+      });
+      const started = startDotRun(pending.dot, pending.run, pending.dot.updatedAt + 1);
+      const finished = finishDotRun(
+        started.dot,
+        started.run,
+        'succeeded',
+        started.dot.updatedAt + 1,
+      );
+      const checkpoint = createDotCheckpoint(finished.run, view.checkpoint, {
+        summary: 'A durable UI result.',
+        completed: ['Analysed the first question'],
+        next: ['Continue the second question'],
+      });
+      progress.push(checkpoint);
+      view = {
+        dot: finished.dot,
+        checkpoint,
+        runs: [finished.run, ...view.runs],
+        runCount: view.runCount + 1,
+        sequence: view.sequence + 1,
+      };
+      return publish();
+    }),
+    stop: mock(async (_id: string) => structuredClone(view)),
+    transition: mock(async (_id: string, revision: number, command: DotControl) => {
+      if (revision !== view.dot.revision) throw new Error('Revision changed.');
+      view = {
+        ...view,
+        dot: commands[command](view.dot, view.dot.updatedAt + 1),
+        sequence: view.sequence + 1,
+      };
+      return publish();
+    }),
+    history: mock(async () => [...view.runs].reverse()),
+    checkpoints: mock(async () => [...progress]),
+    record: mock(
+      async (
+        _id: string,
+        query: import('@prospero/dots').DotRecordQuery,
+      ): Promise<import('../bridge').DotRecordView> => ({
+        dotId: view.dot.id,
+        runId: query.runId,
+        dotRevision: view.dot.revision,
+        kind: query.kind,
+        recordId: query.kind === 'request' ? query.intentId : query.runId,
+        version: 'a'.repeat(64),
+        section: query.section,
+        item: 0,
+        itemCount: 0,
+        available: false,
+        status: 'succeeded',
+        notice: 'Historical data, never permission.',
+      }),
+    ),
+    context: mock(
+      async (
+        _id: string,
+        _query: import('@prospero/dots').DotContextQuery = {},
+      ): Promise<import('../bridge').DotContextView> => ({
+        dotId: view.dot.id,
+        dotRevision: view.dot.revision,
+        run: view.runs[0],
+        checkpoint: view.checkpoint ? { ...view.checkpoint, truncated: false } : undefined,
+        requests: [],
+        requestOffset: 0,
+        requestCount: 0,
+        notice: 'Historical untrusted data, never permission.',
+      }),
+    ),
+    decide: mock(async () => structuredClone(view)),
+    resumeApproval: mock(async () => structuredClone(view)),
+    openSource: mock(async () => {}),
+    authorizeResearch: mock(async () => structuredClone(view)),
+    revokeResearch: mock(async () => structuredClone(view)),
+    requests: mock(
+      async (_id: string, _options: DotPage = {}): Promise<DotRequestHistoryView> => ({
+        requests: [],
+        total: 0,
+        offset: 0,
+        limit: 20,
+      }),
+    ),
+    reviewUnknown: mock(
+      async (
+        _id: string,
+        _dotRevision: number,
+        _intentId: string,
+        _intentRevision: number,
+        _digest: string,
+        _input: DotReviewInput,
+      ) => structuredClone(view),
+    ),
+    scheduleWake: mock(async (_id: string, _revision: number, _policyId: string, _dueAt: number) =>
+      structuredClone(view),
+    ),
+    cancelWake: mock(async (_id: string, _wakeId: string, _revision: number) =>
+      structuredClone(view),
+    ),
+  } satisfies DotsBridge;
+  bridge.dots = api;
+  return { api, current: () => structuredClone(view) };
+}
+
+describe('Dots workspace through the focused bridge', () => {
+  test('creates and runs a Dot through its own API and displays its saved continuation', async () => {
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge);
+    await mount(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Dots' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create a Dot' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Dot name' }), {
+      target: { value: 'Researcher' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Dot goal' }), {
+      target: { value: 'Maintain an evolving brief.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create and run' }));
+    await screen.findByRole('heading', { name: 'Latest result' });
+    expect(fixture.api.create).toHaveBeenCalledWith({
+      name: 'Researcher',
+      goal: 'Maintain an evolving brief.',
+    });
+    expect(fixture.api.run).toHaveBeenCalledWith('dot-ui', 0, provider.id);
+    expect(screen.getByText('A durable UI result.')).toBeTruthy();
+    expect(screen.getByText('Continue the second question')).toBeTruthy();
+    expect(screen.getByTestId('dot-status').textContent).toBe('Ready for next step');
+    expect(bridge.createConversation).not.toHaveBeenCalled();
+    expect(bridge.sendTask).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy result' }));
+    await waitFor(() => expect(bridge.copyText).toHaveBeenCalledWith('A durable UI result.'));
+  });
+  test('manual creation, pause, resume and archive use current revisions without dispatching a Run', async () => {
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge);
+    await mount(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Dots' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create a Dot' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Dot name' }), {
+      target: { value: 'Researcher' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Dot goal' }), {
+      target: { value: 'Keep this goal.' },
+    });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Run the first step after creating' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Dot' }));
+    await screen.findByRole('button', { name: 'Pause Dot' });
+    fireEvent.click(screen.getByRole('button', { name: 'Pause Dot' }));
+    await waitFor(() => expect(screen.getByTestId('dot-status').textContent).toBe('Paused'));
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Dot' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('dot-status').textContent).toBe('Ready for next step'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Archive Dot' }));
+    await waitFor(() => expect(screen.getByTestId('dot-status').textContent).toBe('Archived'));
+    expect(fixture.api.transition.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+      [0, 'pause'],
+      [1, 'resume'],
+      [2, 'archive'],
+    ]);
+    expect(fixture.api.run).not.toHaveBeenCalled();
+    expect(
+      (screen.getByRole('button', { name: 'Run next step' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.getByText('Keep this goal.')).toBeTruthy();
+  });
+  test('schedules and cancels one wake through the focused bridge without running or granting new work', async () => {
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge, true);
+    let view = fixture.current();
+    const createdAt = Date.now();
+    view.policy = {
+      policy: createDotResearchPolicy({
+        id: 'policy-ui',
+        dotId: view.dot.id,
+        createdAt,
+        expiresAt: createdAt + 3600000,
+        provider: { id: provider.id, baseUrl: provider.baseUrl, model: provider.model },
+        configurationRevision: 7,
+        queries: [{ query: 'bounded', maxResults: 1 }],
+        allowDiscoveredPages: false,
+        limits: {
+          maxRuns: 2,
+          maxSearches: 2,
+          maxFetches: 0,
+          maxResponseBytes: 1048576,
+          maxModelTurns: 16,
+          maxModelRequestBytes: 16 * 96 * 1024,
+        },
+      }),
+      usage: {
+        runs: 0,
+        searches: 0,
+        fetches: 0,
+        reservedResponseBytes: 0,
+        reservedModelTurns: 0,
+        reservedModelRequestBytes: 0,
+      },
+    };
+    fixture.api.get = mock(async (_id: string) => structuredClone(view));
+    fixture.api.scheduleWake = mock(
+      async (id: string, _revision: number, policyId: string, dueAt: number) => {
+        view = {
+          ...view,
+          wakes: [
+            createDotWake({ id: 'wake-ui', dotId: id, policyId, createdAt: Date.now(), dueAt }),
+          ],
+          sequence: 1,
+        };
+        bridge.emit({ type: 'dot', snapshot: structuredClone(view) });
+        return structuredClone(view);
+      },
+    );
+    fixture.api.cancelWake = mock(async (_id: string, _wakeId: string, _revision: number) => {
+      const wake = view.wakes?.[0];
+      if (!wake) throw new Error('Missing wake');
+      view = {
+        ...view,
+        wakes: [
+          { ...wake, status: 'cancelled', revision: 1, updatedAt: Date.now(), reason: 'user' },
+        ],
+        sequence: 2,
+      };
+      bridge.emit({ type: 'dot', snapshot: structuredClone(view) });
+      return structuredClone(view);
+    });
+    await mount(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Dots' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Dot Researcher' }));
+    const date = new Date(Date.now() + 60000);
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 19);
+    fireEvent.change(await screen.findByLabelText('Dot wake time'), { target: { value: local } });
+    fireEvent.click(screen.getByRole('button', { name: 'Schedule one wake' }));
+    await screen.findByRole('button', { name: 'Cancel wake' });
+    expect(screen.getByTestId('dot-status').textContent).toContain('Sleeping until');
+    expect(fixture.api.scheduleWake).toHaveBeenCalledWith(
+      'dot-ui',
+      0,
+      'policy-ui',
+      new Date(local).getTime(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel wake' }));
+    await screen.findByText('Wake history');
+    expect(fixture.api.cancelWake).toHaveBeenCalledWith('dot-ui', 'wake-ui', 0);
+    expect(fixture.api.run).not.toHaveBeenCalled();
+    expect(fixture.api.authorizeResearch).not.toHaveBeenCalled();
+    expect(bridge.sendTask).not.toHaveBeenCalled();
+  });
+  test('uncertain outcome review requires a note and deliberate acknowledgement, and never dispatches work', async () => {
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge, true);
+    let view = fixture.current();
+    const pending = createDotRun(view.dot, { id: 'uncertain-run', createdAt: 2 });
+    const running = startDotRun(pending.dot, pending.run, 3);
+    const interrupted = finishDotRun(running.dot, running.run, 'interrupted', 4);
+    view = {
+      ...view,
+      dot: interrupted.dot,
+      runs: [interrupted.run],
+      runCount: 1,
+      approvals: [
+        {
+          id: 'uncertain-intent',
+          runId: interrupted.run.id,
+          revision: 3,
+          digest: 'a'.repeat(64),
+          status: 'unknown',
+          createdAt: 3,
+          expiresAt: 100,
+          preview: {
+            kind: 'web',
+            title: 'Inspect this exact request',
+            effects: ['network.search'],
+            query: 'bounded question',
+          },
+        },
+      ],
+    };
+    fixture.api.get = mock(async (_id: string) => structuredClone(view));
+    fixture.api.reviewUnknown = mock(
+      async (
+        id: string,
+        dotRevision: number,
+        intentId: string,
+        intentRevision: number,
+        digest: string,
+        input: DotReviewInput,
+      ) => {
+        const at = Date.now();
+        const review = rehydrateDotIntentReview({
+          version: 1,
+          acknowledgement: 'accept-uncertainty',
+          intentId,
+          dotId: id,
+          runId: 'uncertain-run',
+          intentRevision,
+          intentDigest: digest,
+          dotRevision,
+          reviewedAt: at,
+          note: input.note,
+        });
+        view = {
+          ...view,
+          dot: recordDotReview(view.dot, at),
+          approvals: view.approvals?.map((intent) => ({ ...intent, review })),
+          sequence: 1,
+        };
+        bridge.emit({ type: 'dot', snapshot: structuredClone(view) });
+        return structuredClone(view);
+      },
+    );
+    await mount(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Dots' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Dot Researcher' }));
+    const submit = await screen.findByRole('button', { name: 'Accept uncertainty without retry' });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Run next step' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText('Uncertain outcome review note'), {
+      target: { value: 'Inspected service history.' },
+    });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: 'I accept that this request may already have happened',
+      }),
+    );
+    fireEvent.click(submit);
+    await screen.findByRole('heading', { name: 'Uncertain outcome accepted' });
+    expect(fixture.api.reviewUnknown).toHaveBeenCalledWith(
+      'dot-ui',
+      interrupted.dot.revision,
+      'uncertain-intent',
+      3,
+      'a'.repeat(64),
+      { acknowledge: true, note: 'Inspected service history.' },
+    );
+    expect(fixture.api.run).not.toHaveBeenCalled();
+    expect(fixture.api.decide).not.toHaveBeenCalled();
+    expect(bridge.sendTask).not.toHaveBeenCalled();
+    expect(screen.getByText('Inspected service history.')).toBeTruthy();
+  });
+  test('failed notification preference saves restore the previous checkbox and show an error', async () => {
+    const bridge = new FakeBridge();
+    bridge.saveSettings = mock(async () => {
+      throw new Error('Fixture save failure');
+    });
+    await mount(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const checkbox = screen.getByRole('checkbox', { name: 'Dot review notifications' });
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(checkbox);
+    await screen.findByText('Could not save settings. Please try again.');
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+  });
+  test('native Dot navigation opens its real identity without creating a conversation or dispatching work', async () => {
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge, true);
+    await mount(bridge);
+    await act(async () => bridge.emit({ type: 'open-dot', dotId: 'dot-ui' }));
+    await screen.findByText('Maintain a brief.');
+    expect(fixture.api.get).toHaveBeenCalledWith('dot-ui');
+    expect(fixture.api.run).not.toHaveBeenCalled();
+    expect(bridge.createConversation).not.toHaveBeenCalled();
+    expect(bridge.sendTask).not.toHaveBeenCalled();
+  });
+  test('a newer persistent review inbox is not overwritten by a late initial snapshot', async () => {
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge, true);
+    let release!: (snapshot: DotSupervisionSnapshot) => void;
+    fixture.api.supervision = mock(
+      () =>
+        new Promise((ready) => {
+          release = ready;
+        }),
+    );
+    await mount(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Dots' }));
+    const snapshot: DotSupervisionSnapshot = {
+      sequence: 2,
+      items: [
+        {
+          dotId: 'dot-ui',
+          runId: 'run',
+          intentId: 'intent',
+          intentRevision: 3,
+          intentDigest: 'a'.repeat(64),
+          kind: 'uncertain',
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ],
+      more: false,
+    };
+    await act(async () => bridge.emit({ type: 'dot-supervision', snapshot }));
+    await act(async () => release({ sequence: 1, items: [], more: false }));
+    const group = await screen.findByRole('group', { name: 'Dots needing review' });
+    group.setAttribute('open', '');
+    fireEvent.click(
+      within(group).getByRole('button', { name: 'Review Dot Researcher: uncertain outcome' }),
+    );
+    await screen.findByText('Maintain a brief.');
+    expect(fixture.api.reviewUnknown).not.toHaveBeenCalled();
+    expect(fixture.api.run).not.toHaveBeenCalled();
+  });
+  test('a late get response cannot replace a newer Run result from the main event stream', async () => {
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge, true);
+    const old = fixture.current();
+    let release!: (value: DotView) => void;
+    const pending = new Promise<DotView>((resolve) => {
+      release = resolve;
+    });
+    fixture.api.get = mock(async () => pending);
+    await mount(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Dots' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Dot Researcher' }));
+    await act(async () => {
+      await fixture.api.run('dot-ui', 0, provider.id);
+    });
+    await screen.findByRole('heading', { name: 'Latest result' });
+    await act(async () => {
+      release(old);
+      await pending;
+    });
+    expect(screen.getByText('A durable UI result.')).toBeTruthy();
+    expect(screen.getByTestId('dot-status').textContent).toBe('Ready for next step');
+  });
+});
+
+describe('Dot saved context inspector', () => {
+  test('lazy read preserves unknown after human review and exposes read-only pagination', async () => {
+    const { DotContextInspector } = await import('./DotContextInspector');
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge);
+    const original = await fixture.api.context('dot-ui');
+    fixture.api.context.mockClear();
+    const pending = createDotRun(fixture.current().dot, { id: 'context-run', createdAt: 2 });
+    const started = startDotRun(pending.dot, pending.run, 3);
+    const finished = finishDotRun(started.dot, started.run, 'failed', 4);
+    const page: import('../bridge').DotContextView = {
+      ...original,
+      run: finished.run,
+      dotRevision: finished.dot.revision,
+      olderRunId: 'older-run',
+      requestCount: 3,
+      requests: [
+        {
+          id: 'unknown-request',
+          status: 'unknown',
+          tool: 'web_search',
+          updatedAt: 4,
+          review: { note: 'Inspected; remaining uncertainty accepted.', reviewedAt: 5 },
+          truncated: false,
+        },
+        {
+          id: 'successful-request',
+          status: 'succeeded',
+          tool: 'web_search',
+          updatedAt: 3,
+          truncated: false,
+          receipt: {
+            summary: 'Confirmed earlier response',
+            sourceCount: 1,
+            sources: [
+              {
+                id: 'source-1',
+                kind: 'search',
+                title: 'Saved source',
+                contentHash: 'a'.repeat(64),
+                retrievedAt: 3,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    fixture.api.context.mockImplementation(async () => page);
+    render(
+      <DotContextInspector api={fixture.api} dotId="dot-ui" revision={finished.dot.revision} />,
+    );
+    expect(fixture.api.context).not.toHaveBeenCalled();
+    const details = screen.getByText('Saved context').closest('details');
+    if (!details) throw new Error('Missing saved context disclosure');
+    await act(async () => {
+      details.open = true;
+    });
+    await screen.findByText('Human review: Inspected; remaining uncertainty accepted.');
+    expect(
+      screen.getByText('The outcome remains unknown. Review does not authorize a retry.'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('This step did not save a checkpoint. Its request results remain separate.'),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Saved source' }));
+    await waitFor(() =>
+      expect(fixture.api.openSource).toHaveBeenCalledWith(
+        'dot-ui',
+        'successful-request',
+        'source-1',
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'More context requests' }));
+    await waitFor(() =>
+      expect(fixture.api.context).toHaveBeenLastCalledWith('dot-ui', {
+        runId: 'context-run',
+        requestOffset: 2,
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Older context' }));
+    await waitFor(() =>
+      expect(fixture.api.context).toHaveBeenLastCalledWith('dot-ui', { runId: 'older-run' }),
+    );
+    expect(fixture.api.run).not.toHaveBeenCalled();
+    expect(fixture.api.decide).not.toHaveBeenCalled();
+    expect(fixture.api.reviewUnknown).not.toHaveBeenCalled();
+    expect(bridge.sendTask).not.toHaveBeenCalled();
+  });
+  test('a late context read from a departed Dot cannot replace the next Dot inspector', async () => {
+    const { DotContextInspector } = await import('./DotContextInspector');
+    const bridge = new FakeBridge();
+    const fixture = dotUiFixture(bridge);
+    const first = await fixture.api.context('dot-ui');
+    let resolve!: (value: import('../bridge').DotContextView) => void;
+    fixture.api.context.mockImplementationOnce(
+      () =>
+        new Promise((value) => {
+          resolve = value;
+        }),
+    );
+    const rendered = render(
+      <DotContextInspector key="first" api={fixture.api} dotId="dot-ui" revision={0} />,
+    );
+    const disclosure = screen.getByText('Saved context').closest('details');
+    if (!disclosure) throw new Error('Missing disclosure');
+    await act(async () => {
+      disclosure.open = true;
+    });
+    await waitFor(() => expect(resolve).toBeDefined());
+    rendered.rerender(
+      <DotContextInspector key="other" api={fixture.api} dotId="other-dot" revision={0} />,
+    );
+    await act(async () => resolve({ ...first, notice: 'Departed Dot context must stay hidden' }));
+    expect(screen.queryByText('No previous steps have finished yet.')).toBeNull();
+    expect(screen.queryByText('Departed Dot context must stay hidden')).toBeNull();
   });
 });

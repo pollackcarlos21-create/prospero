@@ -1,5 +1,17 @@
 // Test-only entrypoint. It loads the unchanged production main bundle after replacing only
 // HTTPS I/O for three fixture domains. The app/preload never expose this seam to renderer IPC.
+// Prevent real OS banners/prompts in every offline Web test. Notification-specific tests
+// replace this transport stub with captures of the real Notification instance getters.
+globalThis.prosperoOfflineNoticesForTest = [];
+require('electron').Notification.prototype.show = function () {
+  globalThis.prosperoOfflineNoticesForTest.push({
+    title: this.title,
+    body: this.body,
+    silent: this.silent,
+    windows: require('electron').BrowserWindow.getAllWindows().length,
+  });
+  globalThis.prosperoOfflineNoticeInstanceForTest = this;
+};
 const { join } = require('node:path');
 const dns = require('node:dns/promises');
 const https = require('node:https');

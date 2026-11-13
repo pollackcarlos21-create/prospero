@@ -9,6 +9,7 @@
     "@prospero/local-host": "workspace:*",
     "@prospero/persistence": "workspace:*",
     "@prospero/web": "workspace:*",
-    "@prospero/tools": "workspace:*"
+    "@prospero/tools": "workspace:*",
+    "@prospero/dots": "workspace:*"
   }
 }
