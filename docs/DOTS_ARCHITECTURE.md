@@ -1,5 +1,7 @@
 # Dots 架构、Domain 与持久化 — M001 / M002 / M003
 
+2026-10-19：当前实现与证据见 [DOTS-DELIVERY](DOTS-DELIVERY.md)。以下 M001–M003 是历史基线。当前 schema v9；startup recovery、共享 admission、checkpoint、有限 runner、Dots UI、core suspension、durable approval 与正式 Web 研究已接入。跨 Run 可撤销 policy / 累计 reservation 见 [ADR-011](decisions/ADR-011-repeat-research-policy.md)，仍复用同一个 core runner。关闭窗口可继续，Quit 停止；绑定原授权的一次性 wake、原子 claim/Run/model reservation、重启与无窗口调度见 [ADR-012](decisions/ADR-012-durable-one-shot-wake.md)。明确的 unknown review、Dot/review 原子 revision 推进和跨 Run 请求历史见 [ADR-013](decisions/ADR-013-uncertainty-review-and-request-history.md)。持久监督列表、原生提醒 attempt claim 与只读点击路由见 [ADR-014](decisions/ADR-014-supervision-inbox-and-native-alerts.md)。终态 Run/partial-work context 的 read transaction、模型内部历史工具与同源只读 UI 见 [ADR-015](decisions/ADR-015-durable-cross-run-context.md)，仍使用 schema v9。完整长期 memory/context、artifact、planning/proactive 等继续实施，完整目标未完成。
+
 M001 日期：2026-10-06（Asia/Shanghai）。M002 更新：2026-10-07。M003 更新：2026-10-08。状态：**M002 纯 domain/lifecycle 与 M003 Durable Dot/Run Repository 已实现并通过离线验证。当前成熟度仅为 Level 1 — Durable，不代表恢复、执行、调度或自治已实现。**
 
 M001 完成 Repository / Architecture Discovery，并停止于 commit `62d1f9c`；M002 完成纯 domain，commit 为 `50bb182f349fef070b3a47f8c77047c25b066412`。用户随后批准重新拆分的 M003–M016 路线，本轮仅授权 M003 Durable Dot/Run Repository。后续 recovery/runtime/approval/wake/UI 仍为提案；M003 结束后停止，不自动进入 M004。

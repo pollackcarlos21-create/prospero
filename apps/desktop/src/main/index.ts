@@ -6,6 +6,7 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
+  powerMonitor,
   Notification,
   session,
   shell,
@@ -22,6 +23,10 @@ import { registerDesktopIpc } from './ipc-boundary';
 import { createLogger } from './logger';
 import { applicationMenu } from './menu';
 import { DesktopService } from './service';
+import { ExecutionAdmission } from './execution-admission';
+import { DotExecutionService } from './dot-execution';
+import { DotApplication } from './dot-application';
+import { DotAlerts } from './dot-alerts';
 
 app.setName('Prospero');
 // Isolated smoke/test profiles are opted into explicitly, never exposed over renderer IPC.
@@ -29,6 +34,18 @@ if (process.env.PROSPERO_USER_DATA) app.setPath('userData', process.env.PROSPERO
 if (!app.requestSingleInstanceLock()) app.exit(0);
 let window: BrowserWindow | undefined;
 let service: DesktopService | undefined;
+let dotExecutions: DotExecutionService | undefined;
+let dotApplication: DotApplication | undefined;
+let dotAlerts: DotAlerts | undefined;
+let queuedDot: string | undefined;
+const executionAdmission = new ExecutionAdmission();
+async function shutdownServices() {
+  dotAlerts?.dispose();
+  dotApplication?.dispose();
+  const results = await Promise.allSettled([service?.shutdown(), dotExecutions?.shutdown()]);
+  if (results.some((result) => result.status === 'rejected'))
+    throw new Error('Execution cleanup failed.');
+}
 let store: ProsperoStore | undefined;
 let expectedUrl = '';
 let quitting = false;
@@ -49,6 +66,7 @@ function appearance(): DesktopAppearance {
   };
 }
 function emit(event: DesktopEvent) {
+  if (event.type === 'bootstrap') dotAlerts?.refresh();
   if (event.type === 'bootstrap' && nativeTheme.themeSource !== event.data.settings.theme)
     nativeTheme.themeSource = event.data.settings.theme;
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
@@ -57,10 +75,23 @@ function emit(event: DesktopEvent) {
 function flushActions() {
   if (!rendererReady) return;
   for (const action of queuedActions.splice(0)) emit({ type: 'desktop-action', action });
+  if (queuedDot) {
+    const dotId = queuedDot;
+    queuedDot = undefined;
+    emit({ type: 'open-dot', dotId });
+  }
 }
 async function dispatchAction(action: DesktopAction) {
   if (quitting) return;
   queuedActions.push(action);
+  await createWindow();
+  flushActions();
+}
+async function openDot(dotId: string) {
+  if (quitting || !dotApplication) return;
+  await dotApplication.get(dotId);
+  if (quitting) return;
+  queuedDot = dotId;
   await createWindow();
   flushActions();
 }
@@ -100,7 +131,7 @@ async function openWindow(): Promise<BrowserWindow> {
     title: 'Prospero',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 17 },
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#171716' : '#f4f2ed',
+    backgroundColor: '#ffffff',
     ...(process.platform === 'darwin'
       ? {
           vibrancy: nativeTheme.prefersReducedTransparency ? undefined : ('sidebar' as const),
@@ -126,12 +157,13 @@ async function openWindow(): Promise<BrowserWindow> {
   current.webContents.on('render-process-gone', async (_event, details) => {
     log('renderer.crash', { process: 'renderer', exitCode: details.exitCode });
     rendererReady = false;
-    await service?.shutdown();
+    await service?.suspendWindow();
     if (current.isDestroyed() || quitting) return;
     const { response } = await dialog.showMessageBox(current, {
       type: 'error',
       title: 'Prospero needs to reload',
-      message: 'The task has been stopped. Your saved conversations are available after reload.',
+      message:
+        'The chat task has been stopped. Dots continue working. Your saved work is available after reload.',
       buttons: ['Reload', 'Quit'],
     });
     if (response === 0) {
@@ -139,12 +171,15 @@ async function openWindow(): Promise<BrowserWindow> {
       current.reload();
     } else app.quit();
   });
+  current.on('blur', () => dotAlerts?.refresh());
+  current.on('minimize', () => dotAlerts?.refresh());
+  current.on('closed', () => dotAlerts?.refresh());
   current.on('close', (event) => {
     if (quitting) return;
     event.preventDefault();
     if (closingWindow) return;
     rendererReady = false;
-    // Stop execution before destroying the window. macOS keeps an idle app in the Dock.
+    // Stop window-owned chat work before destroying it; main-owned Dots keep their lifetime.
     closingWindow = (service?.suspendWindow() ?? Promise.resolve())
       .catch(() => log('shutdown.failure'))
       .finally(() => {
@@ -168,6 +203,9 @@ app
   .whenReady()
   .then(async () => {
     store = new ProsperoStore(join(app.getPath('userData'), 'prospero.sqlite'));
+    // The Electron lock belongs to this profile. Recovery must precede any runtime dispatch.
+    // Window recreation never enters this startup path; ordinary store reads do not recover.
+    while (store.dots().recoverInFlight(Date.now(), () => app.hasSingleInstanceLock()).length) {}
     service = new DesktopService(
       store,
       new SecureCredentialVault(store),
@@ -252,7 +290,69 @@ app
           }
         },
       },
+      undefined,
+      undefined,
+      undefined,
+      executionAdmission,
     );
+    const desktopService = service;
+    dotExecutions = new DotExecutionService(
+      store.dots(),
+      executionAdmission,
+      (providerId, signal) => desktopService.reserveDotModel(providerId, signal),
+      (event) => dotApplication?.notify(event),
+      undefined,
+      undefined,
+      {
+        provider: (id) => {
+          const provider = desktopService.bootstrap().providers.find((entry) => entry.id === id);
+          return provider
+            ? { id: provider.id, baseUrl: provider.baseUrl, model: provider.model }
+            : undefined;
+        },
+        policyRevision: () => desktopService.dotResearchConfigurationRevision(),
+        open: (input) => desktopService.reserveDotResearch(input),
+      },
+    );
+    dotApplication = new DotApplication(
+      store.dots(),
+      dotExecutions,
+      () => desktopService.bootstrap().providers,
+      (snapshot) => emit({ type: 'dot', snapshot }),
+      (dotId) => emit({ type: 'dot-error', dotId }),
+      (url) => shell.openExternal(url),
+      executionAdmission,
+      undefined,
+      () => dotAlerts?.refresh(),
+    );
+    dotAlerts = new DotAlerts(store.dots(), {
+      snapshot: () => {
+        if (!dotApplication) throw new Error('Dots unavailable');
+        return dotApplication.supervision();
+      },
+      publish: (snapshot) => emit({ type: 'dot-supervision', snapshot }),
+      canNotify: () =>
+        !quitting &&
+        store?.getSetting<{ dotNotifications?: boolean }>('ui', {}).dotNotifications !== false &&
+        (!window || window.isDestroyed() || (rendererReady && !window.isFocused())) &&
+        Notification.isSupported(),
+      show: (open) => {
+        const notice = new Notification({
+          title: 'Prospero',
+          body: 'A Dot needs your review.',
+          silent: true,
+        });
+        notice.on('click', open);
+        notice.show();
+      },
+      open: openDot,
+      failed: () => log('app.failure'),
+    });
+    dotAlerts.refresh();
+    powerMonitor.on('resume', () => {
+      dotApplication?.refreshScheduler();
+      dotAlerts?.refresh();
+    });
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) =>
       callback(false),
     );
@@ -284,6 +384,7 @@ app
           ? { senderId: window.webContents.id, url: expectedUrl }
           : undefined,
       () => log('ipc.rejected'),
+      dotApplication,
     );
     nativeTheme.themeSource = service.bootstrap().settings.theme;
     app.setAboutPanelOptions({
@@ -331,8 +432,7 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  service
-    ?.shutdown()
+  void shutdownServices()
     .catch(() => log('shutdown.failure'))
     .finally(() => {
       store?.close();
@@ -349,7 +449,7 @@ process.on('uncaughtException', () => {
   log('app.failure', { process: 'main' });
   if (fatalShutdown) return;
   fatalShutdown = true;
-  void (service?.shutdown() ?? Promise.resolve()).finally(() => {
+  void shutdownServices().finally(() => {
     store?.close();
     app.exit(1);
   });

@@ -1,6 +1,7 @@
 import { ProsperoStore, DotRepositoryError } from '../index';
 import { DatabaseSync } from 'node:sqlite';
 import { createDotRepository } from '../dot-repository';
+import { writeFileSync } from 'node:fs';
 
 const [mode, path, phase] = process.argv.slice(2);
 if (!path) throw new Error('A test database path is required.');
@@ -28,7 +29,20 @@ if (mode === 'crash-before-commit') {
 const store = new ProsperoStore(path);
 const repo = store.dots();
 
-if (mode === 'write') {
+if (mode === 'intent-crash-after-dispatch') {
+  if (!phase) throw new Error('An owned fixture effect path is required.');
+  const intent = repo.intent('intent-1');
+  if (intent?.status !== 'approved') throw new Error('Missing approved fixture intent.');
+  repo.dispatchIntent(
+    intent.id,
+    intent.revision,
+    intent.digest,
+    Math.max(Date.now(), intent.updatedAt),
+  );
+  // Owned test marker stands for an observed effect with no durable acknowledgement.
+  writeFileSync(phase, 'fixture effect occurred once', { flag: 'wx' });
+  process.exit(25);
+} else if (mode === 'write' || mode === 'checkpoint-write') {
   const dot = repo.create({
     id: 'dot-child',
     name: 'Researcher',
@@ -36,10 +50,30 @@ if (mode === 'write') {
     createdAt: 10,
   });
   let pair = repo.createRun(dot.id, dot.revision, { id: 'run-child', createdAt: 20 });
-  if (phase === 'running') pair = repo.startRun(dot.id, pair.run.id, pair.dot.revision, 30);
+  if (phase === 'running' || mode === 'checkpoint-write')
+    pair = repo.startRun(dot.id, pair.run.id, pair.dot.revision, 30);
+  if (mode === 'checkpoint-write') {
+    pair = repo.finishRunWithCheckpoint(
+      dot.id,
+      pair.run.id,
+      pair.dot.revision,
+      {
+        summary: 'A durable research brief.',
+        completed: ['Compared source A'],
+        next: ['Read source B'],
+      },
+      40,
+    );
+  }
   process.stdout.write(`${JSON.stringify(pair)}\n`);
   // Intentionally leave the connection open: the committed WAL must survive process exit.
   process.exit(23);
+} else if (mode === 'checkpoint-read') {
+  const checkpoint = repo.checkpoint('dot-child');
+  process.stdout.write(
+    `${JSON.stringify({ checkpoint, history: repo.checkpoints('dot-child'), frozen: Object.isFrozen(checkpoint) && Object.isFrozen(checkpoint?.next) })}\n`,
+  );
+  store.close();
 } else if (mode === 'read') {
   const dot = repo.get('dot-child');
   const run = repo.getRun('run-child');

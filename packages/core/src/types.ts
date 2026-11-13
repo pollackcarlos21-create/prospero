@@ -4,6 +4,7 @@ export const ExecutionStates = {
   planning: 'planning',
   modelRequest: 'model-request',
   waitingPermission: 'waiting-permission',
+  suspended: 'suspended',
   toolRunning: 'tool-running',
   modelContinuation: 'model-continuation',
   completed: 'completed',
@@ -81,6 +82,8 @@ export interface PreparedTool {
   execute(signal: AbortSignal): Promise<ToolResult>;
   onDecision?(decision: PermissionDecision): void | Promise<void>;
   onSkipped?(reason: 'cancelled' | 'failed'): void | Promise<void>;
+  /** Explicit host opt-in: release preparation resources without dispatch or cancellation. */
+  onSuspended?(): void | Promise<void>;
 }
 export interface ToolHost {
   definitions: ToolDefinition[];
@@ -99,7 +102,7 @@ export interface PermissionPort {
 export type AgentEvent =
   | { type: 'state'; state: ExecutionState }
   | { type: 'text'; delta: string }
-  | { type: 'message'; message: Message }
+  | { type: 'message'; message: Message; replacesMessage?: number }
   | { type: 'tool-request'; call: ToolCall; preview: ToolPreview }
   | { type: 'permission-request'; request: PermissionRequest }
   | { type: 'permission-decision'; requestId: string; decision: PermissionDecision }
@@ -127,6 +130,7 @@ export interface AgentOptions {
   signal: AbortSignal;
   onEvent(event: AgentEvent): void;
   limits?: AgentLimits;
+  suspension?: never;
 }
 export interface AgentOutcome {
   state: 'completed' | 'failed' | 'cancelled';
@@ -134,4 +138,41 @@ export interface AgentOutcome {
   modelTurns: number;
   toolCalls: number;
   error?: string;
+}
+
+export interface SuspendablePermissionPort {
+  decide(request: PermissionRequest, signal: AbortSignal): Promise<PermissionDecision | 'suspend'>;
+}
+export interface SuspendableAgentOptions extends Omit<AgentOptions, 'permissions' | 'suspension'> {
+  permissions: SuspendablePermissionPort;
+  suspension: { continuation?: AgentContinuation };
+}
+/** Serializable execution data only. Never authority to dispatch the pending call. */
+export interface AgentContinuation {
+  readonly version: 1;
+  readonly executionId: string;
+  readonly messages: readonly Readonly<Message>[];
+  readonly memory: readonly string[];
+  readonly pending: {
+    readonly assistantIndex: number;
+    readonly resultIndex: number;
+    readonly expiresAt: number;
+  };
+  readonly modelTurns: number;
+  readonly toolCalls: number;
+  readonly remainingExecutionMs: number;
+  readonly suspendedAt: number;
+  readonly wallDeadline: number;
+  readonly limits: Readonly<Required<AgentLimits>>;
+  readonly denied: {
+    readonly mutations: boolean;
+    readonly network: boolean;
+    readonly reads: readonly string[];
+  };
+  readonly sources: readonly Readonly<SourceRecord>[];
+}
+export interface SuspendedAgentOutcome extends Omit<AgentOutcome, 'state'> {
+  state: 'suspended';
+  continuation: AgentContinuation;
+  request: PermissionRequest;
 }

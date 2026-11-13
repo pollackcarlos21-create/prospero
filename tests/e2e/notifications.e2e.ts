@@ -152,6 +152,23 @@ test('native notification API dispatch: short suppression, controlled focus gate
       .toEqual({ count: 1, minimized: false, visible: true });
     expect(await captures(app)).toHaveLength(1);
   } finally {
+    if (app) {
+      const nativeState = await app
+        .evaluate(({ BrowserWindow, Notification }) => ({
+          windows: BrowserWindow.getAllWindows().map((window) => ({
+            focused: window.isFocused(),
+            minimized: window.isMinimized(),
+            visible: window.isVisible(),
+          })),
+          supported: Notification.isSupported(),
+          captures: Reflect.get(globalThis, 'prosperoNotificationCapturesForTest'),
+        }))
+        .catch(() => ({ unavailable: true }));
+      await test.info().attach('native-notification-state', {
+        body: JSON.stringify(nativeState),
+        contentType: 'application/json',
+      });
+    }
     if (app)
       await app
         .evaluate(({ Notification, BrowserWindow }) => {

@@ -14,7 +14,9 @@ Foundation、Electron shell、provider、conversation、streaming、Agent loop�
 
 真实验证规范见 [V1-REAL-VALIDATION](V1-REAL-VALIDATION.md)。额度预留/保守 receipt、SQLite 跨进程 dispatch 账本、精确快照匹配、provider/Web 计量接缝、纯 report 一致性 validator 及默认拒绝 dry-run 已作为离线准备实现。连接探测、任务/摘要与受控研究通过实际服务入口验证。下一步为完整真实 runner、可信观察/语义审查与 ledger reconciliation、真实端口/native 路径和明确凭据/数据/预算授权。当前 0/30，不能将这些基础模块或打包回归计作真实完成率。
 
-## Dots 已批准路线（本轮仅 M003）
+## Dots 已批准路线与当前完整功能实施
+
+2026-10-19：用户继续要求完整 Dots 与界面改进，当前实现和证据见 [DOTS-DELIVERY](DOTS-DELIVERY.md)。M003 是历史基线；新的完整请求不以 M003 为终点。源码已接入启动恢复、共享 admission、checkpoint、有限 runner、Dots UI、窗口独立运行、core suspension、durable intent/audit 和正式 Dot-owned Web 研究/审批/来源回执。v6 已加入可撤销的跨 Run policy、累计 reservation 与正常 UI；匹配请求可在准确授权范围内继续。v7 已加入持久一次性 wake、原子 claim/Run/model reservation 和重启/无窗口调度，正常 UI 研究第二步延续前次 checkpoint 的离线垂直切片已通过。v8 已加入不可变人工确认、Dot/review 原子 revision 推进和跨 Run 只读请求历史。v9 已加入持久监督列表与无窗口静音提醒，点击只读路由到原 Dot，原审批和预算保持。跨 Run context 现可读取终态 Run、checkpoint 摘要、未完成步骤中的成功请求和人工检查记录，模型与正常 UI 共用有界只读投影，见 ADR-015。下一步为可编辑长期 context/memory、artifact 与 tasks/planning，再扩展 events/proactive；完整目标仍未完成。
 
 用户批准的目标是受控、可恢复、可观察且持续推进长期目标的 Research Dot。M001 commit 为 `62d1f9c`，M002 commit 为 `50bb182f349fef070b3a47f8c77047c25b066412`。M002 已完成零依赖 `@prospero/dots` 的 identity/goal、独立 Dot/Run lifecycle 与不可变转换。2026-10-08 本轮只实施 M003，已实现并通过离线验证；当前仅达到 **Level 1 — Durable**。
 
@@ -39,7 +41,7 @@ M003 在既有 persistence owner 增加 schema v3 `dots` / `dot_runs`、可信 p
 
 具体依赖、验收与风险见 [DOTS_ARCHITECTURE](DOTS_ARCHITECTURE.md)。M007/M013 必须提供可运行垂直切片；M016 才是完整 Research MVP。复杂 planner/task graph、完整 memory/retrieval、event/recurrence、proactive significance/notification、动态 integrations、多场景 showcases 与 Always-on 宿主属于 post-MVP，按真实需求另行规划。
 
-Roadmap 可根据源码与实验结果修订；每次只实施一个获批 milestone。本轮完成 M003 后停止，仅建议 M004 Startup Recovery，不自动实施后续阶段，不 push。
+Roadmap 可根据源码与实验结果修订。历史 M003 请求的停止点已完成；2026-10-18 完整目标允许继续实施。M013 手动观察/管理部分提前，为 M007 提供正常 UI vertical slice；其审批、policy 与 one-shot wake 控件现已随实际能力接入；未来模型自主安排 recurrence 仍需单独明确授权。保留现有未提交工作，不自动提交或 push。
 
 ## 其他延期能力
 

@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startFakeProvider } from './fake-provider';
+import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 
 async function launch(profile: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, PROSPERO_USER_DATA: profile };
@@ -36,6 +38,72 @@ async function configure(page: Page, baseUrl: string) {
   await page.getByRole('button', { name: 'Save provider', exact: true }).click();
   await expect(page.getByTestId('provider-list')).toContainText('Native test provider');
   await page.getByRole('button', { name: 'Close settings', exact: true }).click();
+}
+
+for (const phase of ['pending', 'running'] as const) {
+  test(`main startup explicitly recovers a committed ${phase} Dot Run once without dispatch`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'prospero-dot-startup-'));
+    const profile = join(root, 'profile');
+    const path = join(profile, 'prospero.sqlite');
+    let app: ElectronApplication | undefined;
+    const observe = () => {
+      const db = new DatabaseSync(path, { readOnly: true });
+      try {
+        const dot = db.prepare('SELECT payload,in_flight_run_id FROM dots').get();
+        const run = db.prepare('SELECT payload FROM dot_runs').get();
+        if (typeof dot?.payload !== 'string' || typeof run?.payload !== 'string')
+          throw new Error('Missing fixture records.');
+        return {
+          dot: JSON.parse(dot.payload),
+          run: JSON.parse(run.payload),
+          pointer: dot.in_flight_run_id,
+          integrity: db.prepare('PRAGMA foreign_key_check').all(),
+        };
+      } finally {
+        db.close();
+      }
+    };
+    try {
+      await mkdir(profile, { recursive: true });
+      const written = spawnSync(
+        'bun',
+        [
+          resolve('packages/persistence/src/fixtures/dot-repository-process.ts'),
+          'write',
+          path,
+          phase,
+        ],
+        { encoding: 'utf8', timeout: 10000 },
+      );
+      expect({ status: written.status, stderr: written.stderr }).toEqual({
+        status: 23,
+        stderr: '',
+      });
+      expect(observe().run.status).toBe(phase);
+      app = await launch(profile);
+      await expect(
+        (await app.firstWindow()).getByText('What would you like to do?', { exact: true }),
+      ).toBeVisible();
+      const recovered = observe();
+      expect(recovered.run.status).toBe('interrupted');
+      expect(recovered.dot.lifecycle).toBe('active');
+      expect(recovered.dot.id).toBe('dot-child');
+      expect(recovered.dot.revision).toBe(phase === 'running' ? 3 : 2);
+      expect(recovered.run.dotRevision).toBe(recovered.dot.revision);
+      expect(recovered.dot.inFlightRunId).toBeUndefined();
+      expect(recovered.pointer).toBeNull();
+      expect(recovered.integrity).toEqual([]);
+      await app.close();
+      app = await launch(profile);
+      const page = await app.firstWindow();
+      await expect(page.getByText('What would you like to do?', { exact: true })).toBeVisible();
+      expect(observe()).toEqual(recovered);
+      expect((await page.evaluate(() => window.prospero.bootstrap())).conversations).toEqual([]);
+    } finally {
+      await app?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 }
 
 test('macOS native menus, keyboard, window states, materials, focus and live appearance', async () => {
@@ -181,14 +249,54 @@ test('macOS native menus, keyboard, window states, materials, focus and live app
     });
     await expect
       .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
-      .toBe('dark');
-    await page.screenshot({ path: 'output/playwright/macos-welcome-dark.png' });
+      .toBe('light');
+    // An explicit Light preference stays light even if native appearance changes.
     await app.evaluate(({ nativeTheme }) => {
       nativeTheme.themeSource = 'light';
     });
     await expect
       .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
       .toBe('light');
+    await menuAction(app, 'settings');
+    await page.getByLabel('Appearance', { exact: true }).selectOption('dark');
+    await expect
+      .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
+      .toBe('dark');
+    expect(
+      await page.evaluate(() => window.prospero.bootstrap().then((data) => data.settings.theme)),
+    ).toBe('dark');
+    const appearance = await page.evaluate(() => ({
+      background: getComputedStyle(document.body).backgroundColor,
+      sidebar: getComputedStyle(document.querySelector('.sidebar') as Element).backgroundColor,
+      blur: getComputedStyle(document.querySelector('.sidebar') as Element).backdropFilter,
+      brandSize: getComputedStyle(document.querySelector('.brand') as Element).fontSize,
+      brandIcons: document.querySelectorAll('.brand-mark').length,
+    }));
+    expect(appearance).toMatchObject({
+      background: 'rgb(18, 19, 21)',
+      sidebar: 'rgba(23, 24, 27, 0.5)',
+      brandSize: '21px',
+      brandIcons: 0,
+    });
+    expect(appearance.blur).toContain('blur(');
+    await page.getByRole('button', { name: 'Close settings', exact: true }).click();
+    await page.screenshot({ path: 'output/playwright/macos-welcome-dark.png' });
+    await menuAction(app, 'settings');
+    await page.getByLabel('Appearance', { exact: true }).selectOption('system');
+    await app.evaluate(({ nativeTheme }) => {
+      nativeTheme.themeSource = 'dark';
+    });
+    await expect
+      .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
+      .toBe('dark');
+    await app.evaluate(({ nativeTheme }) => {
+      nativeTheme.themeSource = 'light';
+    });
+    await expect
+      .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
+      .toBe('light');
+    await page.getByLabel('Appearance', { exact: true }).selectOption('light');
+    await page.getByRole('button', { name: 'Close settings', exact: true }).click();
     const surfaces = await page.evaluate(() => {
       const selectors = [
         '.sidebar',

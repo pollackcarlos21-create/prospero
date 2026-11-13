@@ -3,9 +3,34 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ActionJournalPort, SourceRecord } from '@prospero/core';
 import { createDotRepository, type DotRepository } from './dot-repository';
-import { migrateDots } from './dot-schema';
+import {
+  migrateDots,
+  migrateDotCheckpoints,
+  migrateDotIntents,
+  migrateDotPolicies,
+  migrateDotWakes,
+  migrateDotIntentReviews,
+  migrateDotAlerts,
+} from './dot-schema';
+export type {
+  DotIntent,
+  DotIntentInput,
+  DotIntentProvider,
+  DotIntentReceipt,
+  DotIntentEvent,
+  DotIntentStatus,
+} from './dot-intent';
 export { DotRepositoryError, type DotRepositoryErrorCode } from './dot-errors';
-export type { DotRepository, DotLifecycleCommand, DotPage } from './dot-repository';
+export type { DotPolicySnapshot } from './dot-policy-store';
+export type {
+  DotRepository,
+  DotLifecycleCommand,
+  DotPage,
+  DotRepositorySnapshot,
+  DotRequestHistory,
+  DotContextRecord,
+  DotSavedRecord,
+} from './dot-repository';
 import {
   createActionJournal,
   readActionPlans,
@@ -15,6 +40,7 @@ import {
 export type { StoredActionPlan } from './action-journal';
 
 export const SOURCE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+export const SCHEMA_VERSION = 9;
 
 export interface StoredConversation {
   id: string;
@@ -44,7 +70,7 @@ export class ProsperoStore {
     );
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number })
       .user_version;
-    if (version > 3) {
+    if (version > SCHEMA_VERSION) {
       this.db.close();
       throw new Error('Database created by a newer Prospero version.');
     }
@@ -100,15 +126,21 @@ export class ProsperoStore {
       PRAGMA user_version = 2;
       COMMIT;
     `);
-    if (version < 3) {
+    if (version < SCHEMA_VERSION) {
       try {
-        migrateDots(this.db);
+        if (version < 3) migrateDots(this.db);
+        if (version < 4) migrateDotCheckpoints(this.db);
+        if (version < 5) migrateDotIntents(this.db);
+        if (version < 6) migrateDotPolicies(this.db);
+        if (version < 7) migrateDotWakes(this.db);
+        if (version < 8) migrateDotIntentReviews(this.db);
+        if (version < 9) migrateDotAlerts(this.db);
       } catch (error) {
         this.db.close();
         throw error;
       }
     } else {
-      // Migration is additive only. Normal v3 startup retains the existing TTL maintenance.
+      // Migrations are additive only. Normal startup retains the existing TTL maintenance.
       this.db.prepare('DELETE FROM web_sources WHERE expires_at<=?').run(Date.now());
     }
   }
@@ -327,3 +359,5 @@ export class ProsperoStore {
     this.db.close();
   }
 }
+
+export type { DotSupervisionEntry, DotAlertClaim } from './dot-alert-store';

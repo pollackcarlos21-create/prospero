@@ -8,7 +8,6 @@ import type {
   WebSearchInput,
   WebSearchProvider,
 } from '../bridge';
-import { Mark } from './Timeline';
 import { friendlyError } from './friendly-error';
 import { useDialogFocus } from './dialog-focus';
 export type SettingsTab = 'General' | 'Models' | 'Web Search' | 'Permissions' | 'Memory' | 'About';
@@ -45,6 +44,8 @@ export function Settings({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState(initialTab);
+  const [dotNotices, setDotNotices] = useState(settings.dotNotifications !== false);
+  useEffect(() => setDotNotices(settings.dotNotifications !== false), [settings.dotNotifications]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const { ref: dialog, trap } = useDialogFocus();
@@ -77,7 +78,6 @@ export function Settings({
       >
         <aside className="settings-nav">
           <div className="settings-title">
-            <Mark small />
             <strong>Settings</strong>
           </div>
           <nav aria-label="Settings sections">
@@ -122,7 +122,7 @@ export function Settings({
                 <div className="setting-row">
                   <div>
                     <strong>Appearance</strong>
-                    <p>Choose a theme, or follow your system.</p>
+                    <p>Choose Light, Dark, or follow your system appearance.</p>
                   </div>
                   <select
                     aria-label="Appearance"
@@ -160,6 +160,29 @@ export function Settings({
                       </option>
                     ))}
                   </select>
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <strong>Dot review notifications</strong>
+                    <p>
+                      Silent reminders when a Dot needs your review and Prospero is not focused.
+                      Reminders never approve or start work.
+                    </p>
+                  </div>
+                  <input
+                    aria-label="Dot review notifications"
+                    type="checkbox"
+                    checked={dotNotices}
+                    disabled={busy}
+                    onChange={(event) => {
+                      const previous = dotNotices;
+                      const value = event.target.checked;
+                      setDotNotices(value);
+                      void save({ ...settings, dotNotifications: value }).then((saved) => {
+                        if (!saved) setDotNotices(previous);
+                      });
+                    }}
+                  />
                 </div>
                 <div className="shortcut-list">
                   <strong>Keyboard shortcuts</strong>
@@ -230,7 +253,6 @@ export function Settings({
                   />
                 </label>
                 <div className="policy-card">
-                  <span className="tool-symbol">✓</span>
                   <div>
                     <strong>File changes and shell commands always ask</strong>
                     <p>
@@ -255,7 +277,6 @@ export function Settings({
             )}
             {tab === 'About' && (
               <div className="about">
-                <Mark />
                 <h3>Prospero</h3>
                 <p>A personal agent for the work on your computer.</p>
                 <span className="badge">Version {version}</span>
@@ -445,7 +466,10 @@ function WebSearchSettings({
       <label className="setting-row">
         <div>
           <strong>Source retention</strong>
-          <p>Choose how long source metadata and short excerpts remain available.</p>
+          <p>
+            Choose how long source previews remain available. Request history stays saved with your
+            tasks and Dots.
+          </p>
         </div>
         <select
           aria-label="Source retention"
@@ -636,7 +660,6 @@ function ProviderSettings({
           <div className="provider-list" data-testid="provider-list">
             {providers.length === 0 && (
               <div className="settings-empty">
-                <span className="empty-symbol">◇</span>
                 <strong>No providers yet</strong>
                 <p>Add a provider to start your first task.</p>
                 <button type="button" className="primary" onClick={() => edit()}>
@@ -647,7 +670,6 @@ function ProviderSettings({
             {providers.map((provider) => (
               <article className="provider-card" key={provider.id}>
                 <div className="provider-top">
-                  <span className="provider-icon">◇</span>
                   <div>
                     <strong>{provider.displayName}</strong>
                     <span>{provider.model}</span>

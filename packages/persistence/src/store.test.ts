@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProsperoStore } from './index';
+import { ProsperoStore, SCHEMA_VERSION } from './index';
 import { DatabaseSync } from 'node:sqlite';
 test('fresh SQLite migration, append, settings, encrypted credential, execution and restart', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prospero-db-'));
@@ -48,7 +48,7 @@ test('schema version is migrated once and future versions preserve the original 
   try {
     new ProsperoStore(path).close();
     const db = new DatabaseSync(path);
-    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
+    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(SCHEMA_VERSION);
     db.exec('PRAGMA user_version = 99');
     db.close();
     expect(() => new ProsperoStore(path)).toThrow('newer Prospero');

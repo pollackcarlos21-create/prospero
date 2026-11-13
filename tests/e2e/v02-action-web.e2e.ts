@@ -1,6 +1,7 @@
 /* biome-ignore-all lint/style/noNonNullAssertion: Test fixtures assert the required plan and conversation before accessing their IDs. */
 import { test, expect, _electron, type ElectronApplication, type Page } from '@playwright/test';
 import { createServer } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, mkdir, readFile, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -539,7 +540,8 @@ test('v0.2 Stop and abrupt restart retain durable boundaries without automatic c
   }
 });
 
-async function webFixture() {
+async function webFixture(options: { failSearches?: number; holdSearch?: Promise<void> } = {}) {
+  let failures = options.failSearches ?? 0;
   const requests: {
     host: string;
     path: string;
@@ -555,7 +557,7 @@ async function webFixture() {
     request.on('data', (chunk: Buffer) => {
       body += chunk.toString('utf8');
     });
-    request.on('end', () => {
+    request.on('end', async () => {
       const authorization = request.headers.authorization;
       requests.push({
         host,
@@ -567,7 +569,14 @@ async function webFixture() {
         ...(body ? { body: JSON.parse(body) as Record<string, unknown> } : {}),
       });
       if (host === 'api.search.brave.com' || host === 'api.tavily.com') {
+        if (options.holdSearch) await options.holdSearch;
         response.setHeader('Content-Type', 'application/json');
+        if (failures > 0) {
+          failures--;
+          response.statusCode = 503;
+          response.end(JSON.stringify({ error: 'Owned fixture uncertain search failure' }));
+          return;
+        }
         const source = {
           url: 'https://research.example.org/article',
           title: 'Offline research',
@@ -1320,5 +1329,836 @@ test('v0.2 adversarial model after page injection cannot acquire scopes or conve
     await fake.close();
     await web.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('normal Dots UI approves real Web ports, restarts before page approval, and shows durable source receipts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'prospero-dot-research-ui-'));
+  const profile = join(root, 'profile');
+  const web = await webFixture();
+  const fake = await startFakeProvider((_request, _task, results) => {
+    if (!results.length)
+      return { tool: 'web_search', args: { query: 'bounded research background', maxResults: 1 } };
+    if (results.length === 1)
+      return { tool: 'fetch_page', args: { url: JSON.parse(results[0].content).sources[0].url } };
+    if (results.length === 2) {
+      const source = JSON.parse(results[1].content).sources[0];
+      return {
+        tool: 'record_progress',
+        args: {
+          summary: source.content.includes('Research background')
+            ? `Verified research background [source:${source.citation}]`
+            : 'Missing page evidence',
+          completed: ['Read the approved public article'],
+          next: ['Compare the next question'],
+        },
+      };
+    }
+    return { text: 'The bounded research step is saved.' };
+  });
+  let app: ElectronApplication | undefined;
+  const fakeNative = async (application: ElectronApplication) =>
+    application.evaluate(({ safeStorage, shell }) => {
+      safeStorage.isAsyncEncryptionAvailable = async () => true;
+      safeStorage.encryptStringAsync = async (plaintext) =>
+        Buffer.from(Buffer.from(plaintext, 'utf8').map((byte) => byte ^ 0xa5));
+      safeStorage.decryptStringAsync = async (ciphertext) => ({
+        result: Buffer.from(Buffer.from(ciphertext).map((byte) => byte ^ 0xa5)).toString('utf8'),
+        shouldReEncrypt: false,
+      });
+      const state = globalThis as unknown as { dotOpenedSources: string[] };
+      state.dotOpenedSources = [];
+      shell.openExternal = async (url) => {
+        state.dotOpenedSources.push(url);
+      };
+    });
+  try {
+    app = await launch(profile, web.port);
+    await fakeNative(app);
+    let page = await app.firstWindow();
+    await expect(page.getByText('What would you like to do?', { exact: true })).toBeVisible();
+    await configure(page, fake.baseUrl);
+    await webSettings(page, 'sources', 'fixture-dot-search-key');
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    await page.getByRole('button', { name: 'Create a Dot', exact: true }).click();
+    await page.getByLabel('Dot name', { exact: true }).fill('Evidence researcher');
+    await page
+      .getByLabel('Dot goal', { exact: true })
+      .fill('Research the bounded background question using public evidence.');
+    await page.getByRole('button', { name: 'Create and run', exact: true }).click();
+    await expect(page.getByTestId('dot-status')).toHaveText('Waiting for approval');
+    await expect(
+      page.getByRole('region', { name: 'Dot request pending', exact: true }),
+    ).toContainText('bounded research background');
+    expect(web.requests).toHaveLength(0);
+    await page.getByRole('button', { name: 'Approve and continue', exact: true }).click();
+    await expect(
+      page.getByRole('region', { name: 'Dot request pending', exact: true }),
+    ).toContainText('https://research.example.org/article');
+    expect(web.requests).toHaveLength(1);
+    const before = await page.evaluate(async () => {
+      const dots = await window.prospero.dots!.list();
+      return window.prospero.dots!.get(dots[0].id);
+    });
+    expect(before.approvals?.map((intent) => intent.status)).toEqual(['succeeded', 'pending']);
+    expect(JSON.stringify(before)).not.toContain('fixture-dot-search-key');
+    expect(JSON.stringify(before)).not.toContain('modelTurns');
+    await app.close();
+    app = await launch(profile, web.port);
+    await fakeNative(app);
+    page = await app.firstWindow();
+    await expect(page.getByText('What would you like to do?', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    await page.getByRole('button', { name: 'Open Dot Evidence researcher', exact: true }).click();
+    await expect(
+      page.getByRole('button', { name: 'Approve and continue', exact: true }),
+    ).toBeVisible();
+    expect(web.requests).toHaveLength(1);
+    await page.getByRole('button', { name: 'Approve and continue', exact: true }).click();
+    await expect(
+      page.getByRole('region', { name: 'Latest Dot result', exact: true }),
+    ).toContainText('Verified research background [source:src_');
+    await expect(page.getByTestId('dot-status')).toHaveText('Ready for next step');
+    expect(web.requests).toHaveLength(2);
+    const after = await page.evaluate((id) => window.prospero.dots!.get(id), before.dot.id);
+    expect(after.runs[0].id).toBe(before.runs[0].id);
+    expect(after.approvals?.map((intent) => intent.status)).toEqual(['succeeded', 'succeeded']);
+    const pageReceipt = page
+      .getByRole('region', { name: 'Dot request succeeded', exact: true })
+      .filter({ hasText: 'Page read' });
+    await pageReceipt.locator('summary').click();
+    await pageReceipt
+      .getByRole('button', { name: 'Open source: Offline research article', exact: true })
+      .click();
+    expect(
+      await app.evaluate(
+        () => (globalThis as unknown as { dotOpenedSources: string[] }).dotOpenedSources,
+      ),
+    ).toEqual(['https://research.example.org/article']);
+    await pageReceipt.locator('summary').click();
+    await page.locator('.dots-scroll').evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await mkdir('output/playwright', { recursive: true });
+    await page.screenshot({ path: 'output/playwright/dots-research-receipts.png' });
+    await page
+      .getByRole('region', { name: 'Dots workspace', exact: true })
+      .getByRole('button', { name: 'New Dot', exact: true })
+      .click();
+    await page.getByLabel('Dot name', { exact: true }).fill('Denied researcher');
+    await page
+      .getByLabel('Dot goal', { exact: true })
+      .fill('Ask for a bounded request which I will deny.');
+    await page.getByRole('button', { name: 'Create and run', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Deny request', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: 'Deny request', exact: true }).click();
+    await expect(
+      page.getByRole('region', { name: 'Dot request denied', exact: true }),
+    ).toBeVisible();
+    expect(web.requests).toHaveLength(2);
+    const denied = await page.evaluate(async () => {
+      const dots = await window.prospero.dots!.list();
+      const dot = dots.find((dot) => dot.name === 'Denied researcher');
+      if (!dot) throw new Error('Missing denied Dot.');
+      return window.prospero.dots!.get(dot.id);
+    });
+    expect(denied.runs[0].status).toBe('cancelled');
+    expect(denied.dot.lifecycle).toBe('active');
+    expect(denied.checkpoint).toBeUndefined();
+  } finally {
+    await app?.close();
+    await fake.close();
+    await web.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const scheduled of [false, true])
+  test(`bounded Dot research policy drives two Runs across restart${scheduled ? ' using a durable wake with no window' : ''}, keeps cumulative budgets and revokes automatic permission`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'prospero-dot-policy-ui-'));
+    const profile = join(root, 'profile');
+    const web = await webFixture();
+    const fake = await startFakeProvider((request, _task, results) => {
+      if (!results.length)
+        return { tool: 'web_search', args: { query: 'policy background', maxResults: 1 } };
+      if (results.length === 1)
+        return { tool: 'fetch_page', args: { url: JSON.parse(results[0].content).sources[0].url } };
+      if (results.length === 2) {
+        const source = JSON.parse(results[1].content).sources[0];
+        const continued = request.messages.some((message) =>
+          message.content.includes('Policy brief #1'),
+        );
+        return {
+          tool: 'record_progress',
+          args: {
+            summary: source.content.includes('Research background')
+              ? `Policy brief #${continued ? 2 : 1} [source:${source.citation}]`
+              : 'Missing evidence',
+            completed: ['Read an actually returned public source'],
+            next: ['Check the next bounded question'],
+          },
+        };
+      }
+      return { text: 'The bounded policy step is saved.' };
+    });
+    let app: ElectronApplication | undefined;
+    const crypto = async (application: ElectronApplication) =>
+      application.evaluate(({ safeStorage }) => {
+        safeStorage.isAsyncEncryptionAvailable = async () => true;
+        safeStorage.encryptStringAsync = async (plaintext) =>
+          Buffer.from(Buffer.from(plaintext, 'utf8').map((byte) => byte ^ 0xa5));
+        safeStorage.decryptStringAsync = async (ciphertext) => ({
+          result: Buffer.from(Buffer.from(ciphertext).map((byte) => byte ^ 0xa5)).toString('utf8'),
+          shouldReEncrypt: false,
+        });
+      });
+    try {
+      app = await launch(profile, web.port);
+      await crypto(app);
+      let page = await app.firstWindow();
+      await configure(page, fake.baseUrl);
+      await webSettings(page, 'sources', 'fixture-policy-search-key');
+      await page.getByRole('button', { name: 'Dots', exact: true }).click();
+      await page.getByRole('button', { name: 'Create a Dot', exact: true }).click();
+      await page.getByLabel('Dot name', { exact: true }).fill('Policy researcher');
+      await page
+        .getByLabel('Dot goal', { exact: true })
+        .fill('Maintain a bounded evolving research brief.');
+      await page.getByLabel('Run the first step after creating', { exact: true }).uncheck();
+      await page.getByRole('button', { name: 'Create Dot', exact: true }).click();
+      const authorization = page.getByRole('region', {
+        name: 'Repeat research authorization',
+        exact: true,
+      });
+      await authorization.locator('summary').click();
+      await page
+        .getByLabel('Authorized research queries', { exact: true })
+        .fill('policy background');
+      await page.getByLabel('Authorized Runs', { exact: true }).fill('2');
+      await page.getByRole('button', { name: 'Authorize bounded research', exact: true }).click();
+      await expect(authorization).toContainText('0 / 2 Runs');
+      expect(web.requests).toHaveLength(0);
+      await page.getByRole('button', { name: 'Run next step', exact: true }).click();
+      await expect(
+        page.getByRole('region', { name: 'Latest Dot result', exact: true }),
+      ).toContainText('Policy brief #1');
+      expect(web.requests).toHaveLength(2);
+      const first = await page.evaluate(async () => {
+        const dots = await window.prospero.dots!.list();
+        return window.prospero.dots!.get(dots[0].id);
+      });
+      expect(first.policy?.usage.runs).toBe(1);
+      expect(first.policy?.usage.reservedModelTurns).toBe(8);
+      if (scheduled) {
+        const wakeAt = new Date(Date.now() + 12000);
+        const local = new Date(wakeAt.getTime() - wakeAt.getTimezoneOffset() * 60000)
+          .toISOString()
+          .slice(0, 19);
+        await page.getByLabel('Dot wake time', { exact: true }).fill(local);
+        await page.getByRole('button', { name: 'Schedule one wake', exact: true }).click();
+        await expect(page.getByTestId('dot-status')).toContainText('Sleeping until');
+        const pending = await page.evaluate((id) => window.prospero.dots!.get(id), first.dot.id);
+        expect(pending.wakes?.[0].status).toBe('scheduled');
+        expect(pending.policy?.usage.runs).toBe(1);
+        await page
+          .getByRole('region', { name: 'Dot wake schedule', exact: true })
+          .scrollIntoViewIfNeeded();
+        await mkdir('output/playwright', { recursive: true });
+        await page.screenshot({ path: 'output/playwright/dots-wake-scheduled.png' });
+      }
+      await app.close();
+      app = await launch(profile, web.port);
+      await crypto(app);
+      page = await app.firstWindow();
+      await page.getByRole('button', { name: 'Dots', exact: true }).click();
+      await page.getByRole('button', { name: 'Open Dot Policy researcher', exact: true }).click();
+      expect(web.requests).toHaveLength(2);
+      if (scheduled) {
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+        await expect
+          .poll(() => app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length))
+          .toBe(0);
+        const savedRevision = () => {
+          const db = new DatabaseSync(join(profile, 'prospero.sqlite'), { readOnly: true });
+          try {
+            return db
+              .prepare(
+                'SELECT revision FROM dot_checkpoints WHERE dot_id=? ORDER BY revision DESC LIMIT 1',
+              )
+              .get(first.dot.id)?.revision;
+          } finally {
+            db.close();
+          }
+        };
+        await expect.poll(savedRevision, { timeout: 20000 }).toBe(2);
+        expect(
+          await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
+        ).toBe(0);
+        const opened = app.waitForEvent('window');
+        await app.evaluate(({ app }) => app.emit('activate'));
+        page = await opened;
+        await page.getByRole('button', { name: 'Dots', exact: true }).click();
+        await page.getByRole('button', { name: 'Open Dot Policy researcher', exact: true }).click();
+      } else await page.getByRole('button', { name: 'Run next step', exact: true }).click();
+      await expect(
+        page.getByRole('region', { name: 'Latest Dot result', exact: true }),
+      ).toContainText('Policy brief #2');
+      expect(web.requests).toHaveLength(4);
+      const second = await page.evaluate((id) => window.prospero.dots!.get(id), first.dot.id);
+      expect(second.policy?.usage).toMatchObject({
+        runs: 2,
+        searches: 2,
+        fetches: 2,
+        reservedModelTurns: 16,
+        reservedModelRequestBytes: 16 * 96 * 1024,
+        reservedResponseBytes: 2 * (256 * 1024 + 1024 * 1024),
+      });
+      expect(second.checkpoint?.revision).toBe(2);
+      if (scheduled) {
+        expect(second.wakes?.[0].status).toBe('claimed');
+        expect(second.wakes?.[0].runId).toBe(second.runs[0].id);
+        expect(second.wakes).toHaveLength(1);
+      }
+
+      expect(fake.requests).toHaveLength(8);
+      const authorizationPanel = page.getByRole('region', {
+        name: 'Repeat research authorization',
+        exact: true,
+      });
+      await authorizationPanel.locator('summary').click();
+      await mkdir('output/playwright', { recursive: true });
+      await page.locator('.dots-scroll').evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      await page.screenshot({
+        path: scheduled
+          ? 'output/playwright/dots-wake-budget.png'
+          : 'output/playwright/dots-policy-budget.png',
+      });
+      await authorizationPanel.locator('summary').click();
+      await page.getByRole('button', { name: 'Run next step', exact: true }).click();
+      await expect(page.getByRole('alert')).toContainText('budget');
+      expect(fake.requests).toHaveLength(8);
+      expect(web.requests).toHaveLength(4);
+      const policy = page.getByRole('region', {
+        name: 'Repeat research authorization',
+        exact: true,
+      });
+      await policy.locator('summary').click();
+      await page
+        .getByRole('button', { name: 'Revoke research authorization', exact: true })
+        .click();
+      await expect(policy).toContainText('Revoked');
+      await page.getByRole('button', { name: 'Run next step', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Deny request', exact: true })).toBeEnabled();
+      expect(web.requests).toHaveLength(4);
+      await page.getByRole('button', { name: 'Deny request', exact: true }).click();
+      const revoked = await page.evaluate((id) => window.prospero.dots!.get(id), first.dot.id);
+      expect(revoked.policy?.policy.status).toBe('revoked');
+      expect(revoked.policy?.usage.runs).toBe(2);
+    } finally {
+      await app?.close();
+      await fake.close();
+      await web.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+test('Dot uncertainty review survives restart, retains revoked budgets and never retries the old request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'prospero-dot-review-ui-'));
+  const profile = join(root, 'profile');
+  const web = await webFixture({ failSearches: 1 });
+  const fake = await startFakeProvider((_request, _task, results) =>
+    !results.length
+      ? { tool: 'web_search', args: { query: 'review background', maxResults: 1 } }
+      : { text: 'No further work.' },
+  );
+  const crypto = async (application: ElectronApplication) =>
+    application.evaluate(({ safeStorage }) => {
+      safeStorage.isAsyncEncryptionAvailable = async () => true;
+      safeStorage.encryptStringAsync = async (text) =>
+        Buffer.from(Buffer.from(text, 'utf8').map((byte) => byte ^ 0xa5));
+      safeStorage.decryptStringAsync = async (bytes) => ({
+        result: Buffer.from(Buffer.from(bytes).map((byte) => byte ^ 0xa5)).toString('utf8'),
+        shouldReEncrypt: false,
+      });
+    });
+  let app: ElectronApplication | undefined;
+  try {
+    app = await launch(profile, web.port);
+    await crypto(app);
+    let page = await app.firstWindow();
+    await configure(page, fake.baseUrl);
+    await webSettings(page, 'sources', 'fixture-review-search-key');
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    await page.getByRole('button', { name: 'Create a Dot', exact: true }).click();
+    await page.getByLabel('Dot name', { exact: true }).fill('Supervised researcher');
+    await page
+      .getByLabel('Dot goal', { exact: true })
+      .fill('Maintain a research brief with explicit supervision.');
+    await page.getByLabel('Run the first step after creating', { exact: true }).uncheck();
+    await page.getByRole('button', { name: 'Create Dot', exact: true }).click();
+    const authorization = page.getByRole('region', {
+      name: 'Repeat research authorization',
+      exact: true,
+    });
+    await authorization.locator('summary').click();
+    await page.getByLabel('Authorized research queries', { exact: true }).fill('review background');
+    await page.getByRole('button', { name: 'Authorize bounded research', exact: true }).click();
+    await expect(authorization).toContainText('0 / 3 Runs');
+    const wake = new Date(Date.now() + 3600000);
+    await page
+      .getByLabel('Dot wake time', { exact: true })
+      .fill(new Date(wake.getTime() - wake.getTimezoneOffset() * 60000).toISOString().slice(0, 19));
+    await page.getByRole('button', { name: 'Schedule one wake', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Cancel wake', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Run next step', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: 'Outcome needs inspection', exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Accept uncertainty without retry', exact: true }),
+    ).toBeDisabled();
+    const before = await page.evaluate(async () => {
+      const dots = await window.prospero.dots!.list();
+      return window.prospero.dots!.get(dots[0].id);
+    });
+    expect(before.approvals?.[0].status).toBe('unknown');
+    await expect(
+      page
+        .getByRole('region', { name: 'Dot request unknown', exact: true })
+        .locator('.status-light'),
+    ).toHaveCSS('background-color', 'rgb(235, 98, 107)');
+
+    expect(before.policy?.policy.status).toBe('revoked');
+    expect(before.wakes?.[0].status).toBe('blocked');
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(1);
+    const blocked = await page.evaluate(async (view) => {
+      try {
+        await window.prospero.dots!.run(
+          view.dot.id,
+          view.dot.revision,
+          view.policy!.policy.provider.id,
+        );
+        return '';
+      } catch (error) {
+        return String(error);
+      }
+    }, before);
+    expect(blocked).toContain('Inspect');
+    const note =
+      'Inspected the search failure and service history. Accept the remaining uncertainty.';
+    await page.getByLabel('Uncertain outcome review note', { exact: true }).fill(note);
+    await page
+      .getByLabel('I accept that this request may already have happened', { exact: true })
+      .check();
+    await page
+      .getByRole('button', { name: 'Accept uncertainty without retry', exact: true })
+      .click();
+    await expect(
+      page.getByRole('heading', { name: 'Uncertain outcome accepted', exact: true }),
+    ).toBeVisible();
+    const reviewed = await page.evaluate((id) => window.prospero.dots!.get(id), before.dot.id);
+    expect(reviewed.approvals?.[0].status).toBe('unknown');
+    await expect(
+      page
+        .getByRole('region', { name: 'Dot request unknown', exact: true })
+        .locator('.status-light'),
+    ).toHaveCSS('background-color', 'rgb(235, 98, 107)');
+
+    expect(reviewed.approvals?.[0].review?.note).toBe(note);
+    expect(reviewed.dot.revision).toBe(before.dot.revision + 1);
+    expect(reviewed.policy?.usage).toEqual(before.policy?.usage);
+    expect(reviewed.runCount).toBe(1);
+    expect(reviewed.checkpoint).toBeUndefined();
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(1);
+    await app.close();
+    app = await launch(profile, web.port);
+    await crypto(app);
+    page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    await page.getByRole('button', { name: 'Open Dot Supervised researcher', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: 'Uncertain outcome accepted', exact: true }),
+    ).toBeVisible();
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(1);
+    await page.getByRole('button', { name: 'Run next step', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Deny request', exact: true })).toBeEnabled();
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(2);
+    await page.getByRole('button', { name: 'Deny request', exact: true }).click();
+    await page.getByText('All request history', { exact: true }).click();
+    const history = page.getByRole('group', { name: 'Dot request history', exact: true });
+    await expect(history).toContainText('2 requests across all Runs');
+    await history.getByRole('heading', { name: 'Uncertain outcome accepted', exact: true }).click();
+    await expect(history).toContainText(note);
+    const full = await page.evaluate((id) => window.prospero.dots!.requests(id), before.dot.id);
+    expect(full.total).toBe(2);
+    expect(full.requests.find((request) => request.status === 'unknown')?.review?.note).toBe(note);
+    expect(JSON.stringify(full)).not.toContain('continuation');
+    expect(JSON.stringify(full)).not.toContain('fixture-review-search-key');
+    await mkdir('output/playwright', { recursive: true });
+    await history.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'output/playwright/dots-uncertainty-review.png' });
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(2);
+  } finally {
+    await app?.close();
+    await fake.close();
+    await web.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Dot supervision inbox, silent notification, no-window click restore and restart dedup preserve approval boundaries', async () => {
+  test.setTimeout(45000);
+  const root = await mkdtemp(join(tmpdir(), 'prospero-dot-alert-'));
+  const profile = join(root, 'profile');
+  let releaseSearch!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseSearch = resolve;
+  });
+  const web = await webFixture({ failSearches: 1, holdSearch: gate });
+  const fake = await startFakeProvider((_request, _task, results) =>
+    !results.length
+      ? { tool: 'web_search', args: { query: 'private supervision query', maxResults: 1 } }
+      : { text: 'No further work.' },
+  );
+  let application: ElectronApplication | undefined;
+  const crypto = async (app: ElectronApplication) =>
+    app.evaluate(({ safeStorage }) => {
+      safeStorage.isAsyncEncryptionAvailable = async () => true;
+      safeStorage.encryptStringAsync = async (text) =>
+        Buffer.from(Buffer.from(text, 'utf8').map((byte) => byte ^ 0xa5));
+      safeStorage.decryptStringAsync = async (bytes) => ({
+        result: Buffer.from(Buffer.from(bytes).map((byte) => byte ^ 0xa5)).toString('utf8'),
+        shouldReEncrypt: false,
+      });
+    });
+  const notices = (app: ElectronApplication) =>
+    app.evaluate(
+      () =>
+        Reflect.get(globalThis, 'prosperoOfflineNoticesForTest') as {
+          title: string;
+          body: string;
+          silent: boolean;
+          windows: number;
+        }[],
+    );
+  const claimCount = () => {
+    const db = new DatabaseSync(join(profile, 'prospero.sqlite'), { readOnly: true });
+    try {
+      return db.prepare('SELECT COUNT(*) AS n FROM dot_alert_claims').get()?.n;
+    } finally {
+      db.close();
+    }
+  };
+  try {
+    application = await launch(profile, web.port);
+    await crypto(application);
+    let page = await application.firstWindow();
+    await configure(page, fake.baseUrl);
+    await webSettings(page, 'sources', 'fixture-private-alert-key');
+    await application.evaluate(({ Notification, BrowserWindow }) => {
+      Notification.isSupported = () => true;
+      BrowserWindow.getAllWindows()[0].isFocused = () => true;
+    });
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    await page.getByRole('button', { name: 'Create a Dot', exact: true }).click();
+    await page.getByLabel('Dot name', { exact: true }).fill('Private supervised Dot');
+    await page
+      .getByLabel('Dot goal', { exact: true })
+      .fill('Private long-term goal text that must never appear in a banner.');
+    await page.getByRole('button', { name: 'Create and run', exact: true }).click();
+    await expect(
+      page.getByRole('button', { name: 'Approve and continue', exact: true }),
+    ).toBeEnabled();
+    let inbox = page.locator('details[aria-label="Dots needing review"]');
+    await expect(inbox).toBeVisible();
+    expect(await notices(application)).toEqual([]);
+    expect(claimCount()).toBe(0);
+    await page.getByRole('button', { name: 'Open settings', exact: true }).click();
+    await page.getByRole('button', { name: 'General', exact: true }).click();
+    await application.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].isFocused = () => false;
+    });
+    const beforeMute = await inbox.getAttribute('data-supervision-sequence');
+    await page.getByLabel('Dot review notifications', { exact: true }).uncheck();
+    await expect(inbox).not.toHaveAttribute('data-supervision-sequence', beforeMute!);
+    expect(await notices(application)).toEqual([]);
+    expect(claimCount()).toBe(0);
+    await application.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].isFocused = () => true;
+    });
+    const beforeEnable = await inbox.getAttribute('data-supervision-sequence');
+    await page.getByLabel('Dot review notifications', { exact: true }).check();
+    await expect(inbox).not.toHaveAttribute('data-supervision-sequence', beforeEnable!);
+    await page.getByRole('button', { name: 'Close settings', exact: true }).click();
+    const view = await page.evaluate(async () => {
+      const dots = await window.prospero.dots!.list();
+      return window.prospero.dots!.get(dots[0].id);
+    });
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+    await expect
+      .poll(() =>
+        application!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
+      )
+      .toBe(0);
+    await expect
+      .poll(() => notices(application!))
+      .toEqual([{ title: 'Prospero', body: 'A Dot needs your review.', silent: true, windows: 0 }]);
+    expect(claimCount()).toBe(1);
+    expect(web.requests).toHaveLength(0);
+    expect(fake.requests).toHaveLength(1);
+    let opened = application.waitForEvent('window');
+    await application.evaluate(() => {
+      const notice = Reflect.get(
+        globalThis,
+        'prosperoOfflineNoticeInstanceForTest',
+      ) as Electron.Notification;
+      notice.emit('click');
+    });
+    page = await opened;
+    await expect(
+      page.getByRole('heading', { name: 'Private supervised Dot', exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Approve and continue', exact: true }),
+    ).toBeEnabled();
+    expect((await page.evaluate(() => window.prospero.bootstrap())).conversations).toEqual([]);
+    expect(web.requests).toHaveLength(0);
+    await application.close();
+    application = await launch(profile, web.port);
+    await crypto(application);
+    page = await application.firstWindow();
+    await application.evaluate(({ Notification, BrowserWindow }) => {
+      Notification.isSupported = () => true;
+      BrowserWindow.getAllWindows()[0].isFocused = () => false;
+    });
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    inbox = page.locator('details[aria-label="Dots needing review"]');
+    await expect(inbox).toBeVisible();
+    const beforeResume = await inbox.getAttribute('data-supervision-sequence');
+    await application.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+    await expect(inbox).not.toHaveAttribute('data-supervision-sequence', beforeResume!);
+    expect(await notices(application)).toEqual([]);
+    expect(claimCount()).toBe(1);
+    expect(fake.requests).toHaveLength(1);
+    await inbox.locator(':scope > summary').click();
+    await inbox
+      .getByRole('button', {
+        name: 'Review Dot Private supervised Dot: approval required',
+        exact: true,
+      })
+      .click();
+    await page.getByRole('button', { name: 'Approve and continue', exact: true }).click();
+    await expect.poll(() => web.requests.length).toBe(1);
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+    await expect
+      .poll(() =>
+        application!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
+      )
+      .toBe(0);
+    const pausedRequest = new DatabaseSync(join(profile, 'prospero.sqlite'), { readOnly: true });
+    try {
+      expect(
+        pausedRequest
+          .prepare('SELECT status FROM dot_intents WHERE id=?')
+          .get(view.approvals?.[0].id ?? '')?.status,
+      ).toBe('dispatching');
+    } finally {
+      pausedRequest.close();
+    }
+    releaseSearch();
+    await expect
+      .poll(() => notices(application!))
+      .toEqual([{ title: 'Prospero', body: 'A Dot needs your review.', silent: true, windows: 0 }]);
+    expect(claimCount()).toBe(2);
+    expect(fake.requests).toHaveLength(1);
+    expect(web.requests).toHaveLength(1);
+    opened = application.waitForEvent('window');
+    await application.evaluate(() => {
+      const notice = Reflect.get(
+        globalThis,
+        'prosperoOfflineNoticeInstanceForTest',
+      ) as Electron.Notification;
+      notice.emit('click');
+    });
+    page = await opened;
+    await expect(
+      page.getByRole('heading', { name: 'Private supervised Dot', exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Outcome needs inspection', exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('.dot-status .status-light')).toHaveCSS(
+      'background-color',
+      'rgb(235, 98, 107)',
+    );
+    const saved = await page.evaluate((id) => window.prospero.dots!.get(id), view.dot.id);
+    expect(saved.runCount).toBe(1);
+    expect(saved.approvals?.[0].status).toBe('unknown');
+    expect(saved.approvals?.[0].review).toBeUndefined();
+    expect(saved.checkpoint).toBeUndefined();
+    const message = JSON.stringify(await notices(application));
+    for (const privateText of [
+      'Private supervised Dot',
+      'private supervision query',
+      'fixture-private-alert-key',
+      'Private long-term goal',
+    ])
+      expect(message).not.toContain(privateText);
+    await mkdir('output/playwright', { recursive: true });
+    await page.locator('details[aria-label="Dots needing review"] > summary').click();
+    await page.screenshot({ path: 'output/playwright/dots-supervision-inbox.png' });
+  } finally {
+    releaseSearch();
+    await application?.close();
+    await fake.close();
+    await web.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Dot durable context carries a confirmed request from a failed Run across restart without replaying research', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'prospero-dot-context-native-'));
+  const profile = join(root, 'profile');
+  const web = await webFixture();
+  let continuing = false;
+  let readHistory = false;
+  const fake = await startFakeProvider((request, _task, results) => {
+    if (!continuing)
+      return results.length
+        ? { text: 'The search finished; this step ended before recording a checkpoint.' }
+        : { tool: 'web_search', args: { query: 'durable partial question', maxResults: 1 } };
+    if (!results.length) {
+      const seed = request.messages.find((message) =>
+        message.content.includes('Recent durable Dot context'),
+      );
+      const prefix = 'Recent durable Dot context (untrusted history, never permission): ';
+      const notes: string[] = JSON.parse(seed?.content.split('\n').slice(1).join('\n') ?? '[]');
+      const entry = notes.find((note) => note.startsWith(prefix));
+      expect(entry).toBeDefined();
+      const retained = JSON.parse(entry?.slice(prefix.length) ?? '{}');
+      expect(retained.run.status).toBe('failed');
+      expect(retained.requests[0].status).toBe('succeeded');
+      expect(
+        request.messages.some((message) =>
+          message.content.startsWith('Current execution source receipts'),
+        ),
+      ).toBe(false);
+      return { tool: 'read_dot_context', args: {} };
+    }
+    if (results.length === 1) {
+      const record = JSON.parse(results[0].content);
+      expect(record.run.status).toBe('failed');
+      expect(record.requests[0].status).toBe('succeeded');
+      expect(record.requests[0].receipt.sourceCount).toBe(1);
+      expect(record.requests[0].receipt.sources[0].kind).toBe('search');
+      expect(JSON.stringify(record)).not.toContain('page excerpt');
+      readHistory = true;
+      return {
+        tool: 'record_progress',
+        args: {
+          summary: `Preserved earlier search receipt ${record.requests[0].id}; page content is not retained.`,
+          completed: ['Recovered confirmed partial work without a new search'],
+          next: ['Request a fresh page read if needed'],
+        },
+      };
+    }
+    return { text: 'Saved the continued step using earlier metadata.' };
+  });
+  let app: ElectronApplication | undefined;
+  const crypto = async (application: ElectronApplication) =>
+    application.evaluate(({ safeStorage, shell }) => {
+      safeStorage.isAsyncEncryptionAvailable = async () => true;
+      safeStorage.encryptStringAsync = async (text) =>
+        Buffer.from(Buffer.from(text, 'utf8').map((byte) => byte ^ 0xa5));
+      safeStorage.decryptStringAsync = async (bytes) => ({
+        result: Buffer.from(Buffer.from(bytes).map((byte) => byte ^ 0xa5)).toString('utf8'),
+        shouldReEncrypt: false,
+      });
+      Reflect.set(globalThis, 'contextOpenedSourcesForTest', []);
+      shell.openExternal = async (url) => {
+        Reflect.get(globalThis, 'contextOpenedSourcesForTest').push(url);
+      };
+    });
+  try {
+    app = await launch(profile, web.port);
+    await crypto(app);
+    let page = await app.firstWindow();
+    await expect(page.getByText('What would you like to do?', { exact: true })).toBeVisible();
+    await configure(page, fake.baseUrl);
+    await webSettings(page, 'sources', 'fixture-context-search-key');
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    await page.getByRole('button', { name: 'Create a Dot', exact: true }).click();
+    await page.getByLabel('Dot name', { exact: true }).fill('Context researcher');
+    await page
+      .getByLabel('Dot goal', { exact: true })
+      .fill('Maintain a long-lived evidence brief without repeating confirmed work.');
+    await page.getByRole('button', { name: 'Create and run', exact: true }).click();
+    await page.getByRole('button', { name: 'Approve and continue', exact: true }).click();
+    await expect(page.getByTestId('dot-status')).toHaveText('Needs attention');
+    const first = await page.evaluate(async () => {
+      const [dot] = await window.prospero.dots!.list();
+      return window.prospero.dots!.get(dot.id);
+    });
+    expect(first.runs[0].status).toBe('failed');
+    expect(first.checkpoint).toBeUndefined();
+    expect(first.approvals?.[0].status).toBe('succeeded');
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(2);
+    await app.close();
+    app = await launch(profile, web.port);
+    await crypto(app);
+    page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Dots', exact: true }).click();
+    await page.getByRole('button', { name: 'Open Dot Context researcher', exact: true }).click();
+    await page.getByText('Saved context', { exact: true }).click();
+    const inspector = page.getByRole('region', { name: 'Dot saved context', exact: true });
+    await expect(inspector).toContainText('Step failed');
+    await expect(inspector).toContainText('Search · succeeded');
+    await expect(inspector).toContainText('This step did not save a checkpoint');
+    await expect(inspector).toContainText('Search result metadata');
+    const sourceButton = inspector.getByRole('button', { name: 'Offline research', exact: true });
+    await sourceButton.click();
+    expect(
+      await app.evaluate(() => Reflect.get(globalThis, 'contextOpenedSourcesForTest')),
+    ).toEqual(['https://research.example.org/article']);
+    const context = await page.evaluate((id) => window.prospero.dots!.context(id), first.dot.id);
+    expect(Object.keys(context)).not.toContain('continuation');
+    expect(JSON.stringify(context)).not.toContain('fixture-context-search-key');
+    expect(JSON.stringify(context)).not.toContain('policyRevision');
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(2);
+    continuing = true;
+    await page.getByRole('button', { name: 'Run next step', exact: true }).click();
+    await expect(
+      page.getByRole('region', { name: 'Latest Dot result', exact: true }),
+    ).toContainText('Preserved earlier search receipt');
+    expect(readHistory).toBe(true);
+    expect(web.requests).toHaveLength(1);
+    expect(fake.requests).toHaveLength(5);
+    const second = await page.evaluate((id) => window.prospero.dots!.get(id), first.dot.id);
+    expect(second.runCount).toBe(2);
+    expect(second.runs[0].status).toBe('succeeded');
+    expect(second.approvals).toHaveLength(0);
+    await inspector.getByRole('button', { name: 'Refresh saved context', exact: true }).click();
+    await expect(inspector).toContainText('Step succeeded');
+    await inspector.getByRole('button', { name: 'Older context', exact: true }).click();
+    await expect(inspector).toContainText('Step failed');
+    await expect(inspector).toContainText(first.runs[0].id);
+    await mkdir('output/playwright', { recursive: true });
+    await inspector.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'output/playwright/dots-saved-context.png' });
+    expect((await page.evaluate(() => window.prospero.bootstrap())).conversations).toHaveLength(0);
+  } finally {
+    await app?.close();
+    await fake.close();
+    await web.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

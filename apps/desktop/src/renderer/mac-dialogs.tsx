@@ -38,7 +38,6 @@ export function CommandPalette({
         onKeyDown={trap}
       >
         <div className="command-search">
-          <span aria-hidden="true">⌕</span>
           <input
             aria-label="Search commands"
             role="combobox"

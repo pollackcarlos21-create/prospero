@@ -90,6 +90,13 @@ export function archiveDot(dot: Dot, at: number): Dot {
   return changeLifecycle(dot, at, 'archived', ['active', 'paused', 'completed', 'cancelled']);
 }
 
+/** Record an explicit host-validated review. It grants no work and changes no lifecycle. */
+export function recordDotReview(dot: Dot, at: number): Dot {
+  assertDot(dot);
+  if (dot.inFlightRunId !== undefined) throw new DotError('run-in-flight');
+  return snapshot(advance(dot, at));
+}
+
 /** Reserve a pending run on the supplied latest aggregate, not a global execution slot. */
 export function createDotRun(dot: Dot, input: { id: string; createdAt: number }): DotRunChange {
   assertDot(dot);

@@ -1,5 +1,8 @@
 import { Channels } from '../ipc';
 import type { DesktopService } from './service';
+import type { DotApplication } from './dot-application';
+import { DotError, rehydrateDotRecordQuery } from '@prospero/dots';
+import { DotRepositoryError } from '@prospero/persistence';
 import {
   clipboardText,
   contextMenuTarget,
@@ -14,6 +17,14 @@ import {
   researchDigest,
   webSearchInput,
   webSearchTestInput,
+  dotId,
+  dotRevision,
+  dotControl,
+  dotInput,
+  dotPage,
+  dotPolicyTerms,
+  dotReviewInput,
+  dotContextQuery,
 } from './validation';
 export interface InvokeContext {
   senderId: number;
@@ -28,8 +39,115 @@ export function registerDesktopIpc(
   service: DesktopService,
   trusted: () => { senderId: number; url: string } | undefined,
   rejected: () => void,
+  dots?: DotApplication,
 ) {
+  const requireDots = () => {
+    if (!dots) throw new UserError('Dots are not available in this window.');
+    return dots;
+  };
   const handlers: Record<string, { count: number; run: (...args: unknown[]) => unknown }> = {
+    [Channels.dotsRecord]: {
+      count: 2,
+      run: (value, query) => requireDots().record(dotId(value), rehydrateDotRecordQuery(query)),
+    },
+    [Channels.dotsContext]: {
+      count: 2,
+      run: (value, query) => requireDots().context(dotId(value), dotContextQuery(query)),
+    },
+    [Channels.dotsSupervision]: { count: 0, run: () => requireDots().supervision() },
+    [Channels.dotsRequests]: {
+      count: 2,
+      run: (value, options) => requireDots().requests(dotId(value), dotPage(options)),
+    },
+    [Channels.dotsReviewUnknown]: {
+      count: 6,
+      run: (value, revision, intent, intentRevision, digest, input) =>
+        requireDots().reviewUnknown(
+          dotId(value),
+          dotRevision(revision),
+          dotId(intent),
+          dotRevision(intentRevision),
+          planDigest(digest),
+          dotReviewInput(input),
+        ),
+    },
+    [Channels.dotsScheduleWake]: {
+      count: 4,
+      run: (value, revision, policy, dueAt) =>
+        requireDots().scheduleWake(
+          dotId(value),
+          dotRevision(revision),
+          dotId(policy),
+          dotRevision(dueAt),
+        ),
+    },
+    [Channels.dotsCancelWake]: {
+      count: 3,
+      run: (value, wake, revision) =>
+        requireDots().cancelWake(dotId(value), dotId(wake), dotRevision(revision)),
+    },
+    [Channels.dotsList]: { count: 1, run: (options) => requireDots().list(dotPage(options, true)) },
+    [Channels.dotsGet]: { count: 1, run: (value) => requireDots().get(dotId(value)) },
+    [Channels.dotsCreate]: { count: 1, run: (input) => requireDots().create(dotInput(input)) },
+    [Channels.dotsRun]: {
+      count: 3,
+      run: (value, revision, provider) =>
+        requireDots().run(dotId(value), dotRevision(revision), id(provider)),
+    },
+    [Channels.dotsStop]: { count: 1, run: (value) => requireDots().stop(dotId(value)) },
+    [Channels.dotsTransition]: {
+      count: 3,
+      run: (value, revision, command) =>
+        requireDots().transition(dotId(value), dotRevision(revision), dotControl(command)),
+    },
+    [Channels.dotsHistory]: {
+      count: 2,
+      run: (value, options) => requireDots().history(dotId(value), dotPage(options)),
+    },
+    [Channels.dotsCheckpoints]: {
+      count: 2,
+      run: (value, options) => requireDots().checkpoints(dotId(value), dotPage(options)),
+    },
+    [Channels.dotsDecide]: {
+      count: 6,
+      run: (value, revision, intent, intentRevision, digest, decision) => {
+        if (decision !== 'approve' && decision !== 'deny')
+          throw new UserError('Invalid Dot approval decision.');
+        return requireDots().decide(
+          dotId(value),
+          dotRevision(revision),
+          dotId(intent),
+          dotRevision(intentRevision),
+          planDigest(digest),
+          decision,
+        );
+      },
+    },
+    [Channels.dotsResumeApproval]: {
+      count: 3,
+      run: (value, revision, intent) =>
+        requireDots().resumeApproval(dotId(value), dotRevision(revision), dotId(intent)),
+    },
+    [Channels.dotsOpenSource]: {
+      count: 3,
+      run: (value, intent, source) =>
+        requireDots().openSource(dotId(value), dotId(intent), id(source)),
+    },
+    [Channels.dotsAuthorizeResearch]: {
+      count: 4,
+      run: (value, revision, provider, input) =>
+        requireDots().authorizeResearch(
+          dotId(value),
+          dotRevision(revision),
+          id(provider),
+          dotPolicyTerms(input),
+        ),
+    },
+    [Channels.dotsRevokeResearch]: {
+      count: 3,
+      run: (value, policy, revision) =>
+        requireDots().revokeResearch(dotId(value), dotId(policy), dotRevision(revision)),
+    },
     [Channels.bootstrap]: { count: 0, run: () => service.bootstrap() },
     [Channels.ready]: { count: 0, run: () => service.desktopReady() },
     [Channels.createConversation]: { count: 0, run: () => service.createConversation() },
@@ -77,6 +195,7 @@ export function registerDesktopIpc(
       },
     },
     [Channels.sendTask]: { count: 2, run: (c, t) => service.sendTask(id(c), text(t)) },
+    [Channels.sendTeamTask]: { count: 2, run: (c, t) => service.sendTask(id(c), text(t), true) },
     [Channels.stopTask]: { count: 1, run: (c) => service.stopTask(id(c)) },
     [Channels.decidePermission]: {
       count: 3,
@@ -104,7 +223,9 @@ export function registerDesktopIpc(
         return await handler.run(...args);
       } catch (error) {
         throw new Error(
-          error instanceof UserError
+          error instanceof UserError ||
+            error instanceof DotError ||
+            error instanceof DotRepositoryError
             ? error.message
             : 'Unable to complete this action. Check the settings and try again.',
         );

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { ProsperoStore, SOURCE_RETENTION_MS } from './index';
+import { ProsperoStore, SOURCE_RETENTION_MS, SCHEMA_VERSION } from './index';
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'prospero-action-db-'));
@@ -107,7 +107,7 @@ test('v1 migration preserves conversations, settings, providers, encrypted crede
     expect(store.sources('legacy')).toEqual([]);
     store.close();
     const migrated = new DatabaseSync(path);
-    expect(migrated.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
+    expect(migrated.prepare('PRAGMA user_version').get()?.user_version).toBe(SCHEMA_VERSION);
     migrated.close();
     new ProsperoStore(path).close();
   } finally {

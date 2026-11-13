@@ -32,6 +32,7 @@
       "version": "0.2.0",
       "dependencies": {
         "@prospero/core": "workspace:*",
+        "@prospero/dots": "workspace:*",
         "@prospero/local-host": "workspace:*",
         "@prospero/persistence": "workspace:*",
         "@prospero/providers": "workspace:*",

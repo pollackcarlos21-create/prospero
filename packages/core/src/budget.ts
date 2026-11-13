@@ -38,7 +38,7 @@ export class ExecutionBudget {
     );
   }
 
-  beginPermissionWait() {
+  beginPermissionWait(remainingMs = this.limits.permissionMs) {
     this.remaining -= performance.now() - this.activeSince;
     clearTimeout(this.activeTimer);
     this.activeTimer = undefined;
@@ -48,7 +48,7 @@ export class ExecutionBudget {
     }
     this.permissionTimer = setTimeout(
       () => this.expire('Permission wait time limit reached. Start a new task to continue.'),
-      this.limits.permissionMs,
+      Math.min(this.limits.permissionMs, remainingMs),
     );
   }
 
@@ -56,6 +56,13 @@ export class ExecutionBudget {
     clearTimeout(this.permissionTimer);
     this.permissionTimer = undefined;
     this.startActive();
+  }
+
+  remainingExecutionMs() {
+    return Math.max(
+      0,
+      this.remaining - (this.activeTimer === undefined ? 0 : performance.now() - this.activeSince),
+    );
   }
 
   dispose() {

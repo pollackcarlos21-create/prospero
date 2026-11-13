@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { DotRepositoryError, ProsperoStore } from './index';
+import { DotRepositoryError, ProsperoStore, SCHEMA_VERSION } from './index';
 
 type Repository = ReturnType<ProsperoStore['dots']>;
 type RepositoryCode = DotRepositoryError['code'];
@@ -186,11 +186,13 @@ function legacyRows(path: string, version: 1 | 2) {
 }
 
 describe('Dot repository schema and existing profile preservation', () => {
-  test('fresh v0 database migrates once to v3 without adding future Dot subsystems', async () => {
+  test('fresh v0 database migrates once with only the implemented Dot tables', async () => {
     await fixture(({ path, open, close }) => {
       const store = open();
       expect(store.dots().list()).toEqual([]);
-      expect(inspect(path, (db) => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(3);
+      expect(inspect(path, (db) => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(
+        SCHEMA_VERSION,
+      );
       const tables = inspect(path, (db) =>
         db
           .prepare(
@@ -198,11 +200,26 @@ describe('Dot repository schema and existing profile preservation', () => {
           )
           .all(),
       );
-      expect(tables.map((row) => row.name)).toEqual(['dot_runs', 'dots']);
+      expect(tables.map((row) => row.name)).toEqual([
+        'dot_alert_claims',
+        'dot_checkpoints',
+        'dot_intent_events',
+        'dot_intent_reviews',
+        'dot_intents',
+        'dot_policies',
+        'dot_policy_approvals',
+        'dot_policy_usage',
+        'dot_runs',
+        'dot_wake_events',
+        'dot_wakes',
+        'dots',
+      ]);
       close(store);
       const reopened = open();
       expect(reopened.dots().list()).toEqual([]);
-      expect(inspect(path, (db) => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(3);
+      expect(inspect(path, (db) => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(
+        SCHEMA_VERSION,
+      );
     });
   });
 
@@ -219,7 +236,7 @@ describe('Dot repository schema and existing profile preservation', () => {
         expect(store.executions('legacy')[0].state).toBe('completed');
         expect(store.dots().list()).toEqual([]);
         expect(inspect(path, (db) => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(
-          3,
+          SCHEMA_VERSION,
         );
         if (version === 2) {
           expect(store.actionPlans('legacy')[0].journal[0].detail).toBe('legacy receipt');

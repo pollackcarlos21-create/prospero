@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { ActionPlan, ActionStatus, PlanStatus, SourceRecord } from '@prospero/core';
 import type { ActionPlanRecord } from '../bridge';
 import { DiffPreview } from './DiffPreview';
+import { statusTone } from './task-presentation';
 
 export const actionLabels: Record<string, string> = {
   copy_file: 'Copy file',
@@ -137,7 +138,7 @@ export function PlanJournal({ records }: { records: ActionPlanRecord[] }) {
       {records.map(({ plan, status, journal }) => (
         <details className={`plan-journal ${status}`} key={plan.id} data-testid="plan-journal">
           <summary>
-            <span aria-hidden="true">{status === 'completed' ? '✓' : '◷'}</span>
+            <span className={`status-light ${statusTone(status)}`} aria-hidden="true" />
             <strong>{plan.title}</strong>
             <span className={`plan-status ${status}`}>{statuses[status]}</span>
           </summary>
@@ -159,9 +160,10 @@ export function PlanJournal({ records }: { records: ActionPlanRecord[] }) {
               const actionStatus = latest?.status ?? 'prepared';
               return (
                 <li key={action.id}>
-                  <span className={`journal-marker ${actionStatus}`} aria-hidden="true">
-                    {actionStatus === 'succeeded' ? '✓' : '○'}
-                  </span>
+                  <span
+                    className={`journal-marker status-light ${statusTone(actionStatus)}`}
+                    aria-hidden="true"
+                  />
                   <div>
                     <div className="journal-heading">
                       <strong>{actionLabels[action.kind] ?? action.kind}</strong>
